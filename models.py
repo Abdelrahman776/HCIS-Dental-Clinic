@@ -1,6 +1,6 @@
-from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey , Boolean
 from sqlalchemy.orm import relationship, declarative_base
-from pydantic import BaseModel, EmailStr
+
 
 Base = declarative_base()
 
@@ -11,8 +11,9 @@ class User(Base):
     password_hash = Column(String(255))
     role = Column(String(255))
     email = Column(String(255), unique=True, index=True)
+    is_active = Column(Boolean, default=False)
     patients = relationship("Patient", back_populates="user")
-
+ 
 class Patient(Base):
     __tablename__ = 'patients'
     id = Column(Integer, primary_key=True, index=True)
@@ -30,8 +31,4 @@ class Patient(Base):
     user = relationship("User", back_populates="patients")
 
 
-class UserRegistrationRequest(BaseModel):
-    username: str
-    email: EmailStr
-    password: str
-    role: str  # Assuming role is needed at registration, adjust if not necessary
+  # Assuming role is needed at registration, adjust if not necessary

@@ -8,6 +8,9 @@ from jose import jwt, JWTError
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer , OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 app = FastAPI()
 
 SECRET_KEY = "big_secret"
@@ -19,6 +22,7 @@ class RegistrationResponse(BaseModel):
     username: str
     email: str
     role: str
+    is_active: bool
 
 class RecoveryResponse(BaseModel):
     message: str
@@ -47,12 +51,31 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 def root():
     return RedirectResponse(url="/docs")
 
-def create_access_token(data: dict, expires_delta: timedelta = None):
+
+
+
+
+def send_email(subject, receiver_email, body, smtp_server="smtp.office365.com", smtp_port=587, sender_email="dentalhcis@outlook.com", password="passwordpassword123"):
+    message = MIMEMultipart()
+    message["From"] = sender_email
+    message["To"] = receiver_email
+    message["Subject"] = subject
+    message.attach(MIMEText(body, "plain"))
+
+    server = smtplib.SMTP(smtp_server, smtp_port)
+    server.starttls()  # Secure the connection
+    server.login(sender_email, password)
+    server.sendmail(sender_email, receiver_email, message.as_string())
+    server.quit()
+
+# Replace "your-email@outlook.com" and "YOUR_APP_PASSWORD" with your actual Outlook email and app password.
+
+
+
+
+def create_access_token(data: dict, expires_delta: timedelta):
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+    expire = datetime.utcnow() + expires_delta
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
@@ -70,6 +93,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     except JWTError:
         raise HTTPException(status_code=403, detail="Invalid authentication token")
     
+
 @app.post("/register/", response_model=RegistrationResponse)
 def register_user(
     username: str = Form(...),
@@ -77,24 +101,40 @@ def register_user(
     password: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    # Normalize email and check for the '-d' suffix
+    # Normalize and check the email for determining the role
     email = email.lower()
     if email.endswith("-d"):
         role = "doctor"
-        email = email[:-2]  # Remove the "-d" suffix from the email
+        email = email[:-2]
     else:
         role = "patient"
+    
+    # Check if the user already exists
+    if db.query(User).filter((User.email == email)).first():
+        raise HTTPException(status_code=400, detail="Email already in use")
 
-    # Check if email or username already exists
-    if db.query(User).filter((User.username == username) | (User.email == email)).first():
-        raise HTTPException(status_code=400, detail="Username or email already in use")
-
+    # Create a new user with is_active set to False
     hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    new_user = User(username=username, email=email, password_hash=hashed_password, role=role)
+    new_user = User(username=username, email=email, password_hash=hashed_password, role=role, is_active=False)
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    return RegistrationResponse(message="User registered successfully", username=username, email=email, role=role)
+    
+    # Generate a verification token
+    verification_token = create_access_token({"user_id": new_user.id}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+
+    # Log the token to the console for testing purposes
+    print("Generated token:", verification_token)
+
+    # Construct the verification link
+    verification_link = f"http://127.0.0.1:8000/activate?token={verification_token}"
+    body = f"Hello {username},\n\nPlease activate your account by clicking on the link below:\n{verification_link}\n\nThank you!"
+    
+    # Send an activation email
+    send_email("Activate Your Account", email, body)
+
+    return RegistrationResponse(message="Registration successful, please check your email to activate your account.", username=username, email=email, role=role, is_active=False)
+
 
 
 
@@ -131,13 +171,16 @@ def forgot_password(request: PasswordResetRequest, db: Session = Depends(get_db)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Generate a password reset token with short expiry
     reset_token = create_access_token(data={"sub": user.username}, expires_delta=timedelta(minutes=15))
 
-    # Send reset email with token
-    send_password_reset_email(user.email, reset_token)
+    send_email(
+        "Password Reset Request",
+        user.email,
+        f"Hello, please follow this link to reset your password: [Link with token here]"
+    )
 
     return PasswordResetResponse(message="Password reset email sent successfully")
+
 
 # Function to send reset email
 def send_password_reset_email(email: str, reset_token: str):
@@ -165,3 +208,18 @@ def reset_password(token: str, new_password: str, db: Session = Depends(get_db))
             raise HTTPException(status_code=404, detail="User not found")
     except JWTError as e:
         raise HTTPException(status_code=403, detail="Invalid token")
+    
+
+@app.get("/activate/")
+def activate_account(token: str, db: Session = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.is_active = True
+        db.commit()
+        return {"message": "Account activated successfully"}
+    except jwt.JWTError:
+        raise HTTPException(status_code=400, detail="Invalid activation link")
