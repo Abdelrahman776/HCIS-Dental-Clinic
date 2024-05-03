@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status , Form
 from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey , Boolean
 from sqlalchemy.orm import Session
-from models import User , Patient
+from models import User , Patient , Appointment , Doctor
 from database import get_db
 import bcrypt
 from pydantic import BaseModel , EmailStr
@@ -9,7 +9,7 @@ from jose import jwt, JWTError
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer , OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
-from typing import Optional
+from typing import Optional , List
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -32,7 +32,8 @@ class RecoveryResponse(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str
-    user_id: int  # Add this line to include user_id in the response
+    user_id: int
+    role: str  # Add role here
 
 class PasswordResetRequest(BaseModel):
     email: str
@@ -60,6 +61,11 @@ class PatientResponse(BaseModel):
     dental_history: Optional[str] = None
     language_preference: Optional[str] = None
 
+class AppointmentCreate(BaseModel):
+    patient_id: int
+    doctor_id: int
+    scheduled_time: datetime
+    notes: Optional[str] = None
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
@@ -150,12 +156,11 @@ def register_user(
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if user and bcrypt.checkpw(form_data.password.encode(), user.password_hash.encode()):
-        # Create the access token as before
-        access_token = create_access_token(data={"sub": user.username, "user_id": user.id},  # Include user ID in the token as well for use in other parts of your application
-            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-        return LoginResponse(access_token=access_token, token_type="bearer", user_id=user.id)
+        access_token = create_access_token(data={"sub": user.username, "user_id": user.id}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+        return LoginResponse(access_token=access_token, token_type="bearer", user_id=user.id, role=user.role)
     else:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
 
 
 
@@ -239,3 +244,69 @@ async def get_patient_data(user_id: int, db: Session = Depends(get_db), current_
     # Convert the SQLAlchemy model instance to the Pydantic model instance
     return patient
 
+@app.post("/appointments/", response_model=AppointmentCreate)
+def schedule_appointment(appointment_data: AppointmentCreate, db: Session = Depends(get_db)):
+    # Check if the patient exists
+    patient = db.query(Patient).filter(Patient.id == appointment_data.patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    # Check if the doctor exists
+    doctor = db.query(User).filter(User.id == appointment_data.doctor_id, User.role == 'doctor').first()
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+
+    # Create and save the new appointment
+    new_appointment = Appointment(
+        patient_id=appointment_data.patient_id,
+        doctor_id=appointment_data.doctor_id,
+        scheduled_time=appointment_data.scheduled_time,
+        status='scheduled',
+        notes=appointment_data.notes
+    )
+    db.add(new_appointment)
+    db.commit()
+    return new_appointment
+
+@app.put("/appointments/{appointment_id}/", response_model=AppointmentCreate)
+def update_appointment(appointment_id: int, appointment: AppointmentCreate, db: Session = Depends(get_db)):
+    db_appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    if not db_appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    db_appointment.scheduled_time = appointment.scheduled_time
+    db_appointment.notes = appointment.notes
+    db.commit()
+    return db_appointment
+
+@app.delete("/appointments/{appointment_id}/")
+def cancel_appointment(appointment_id: int, db: Session = Depends(get_db)):
+    db_appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    if not db_appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    db_appointment.status = 'cancelled'
+    db.commit()
+    return {"message": "Appointment cancelled successfully"}
+
+
+@app.get("/appointments/", response_model=List[AppointmentCreate])
+def read_appointments(db: Session = Depends(get_db)):
+    return db.query(Appointment).all()
+
+@app.get("/appointments/patient/{patient_id}/", response_model=List[AppointmentCreate])
+def read_patient_appointments(patient_id: int, db: Session = Depends(get_db)):
+    return db.query(Appointment).filter(Appointment.patient_id == patient_id).all()
+
+@app.get("/appointments/doctor/{doctor_id}/", response_model=List[AppointmentCreate])
+def read_doctor_appointments(doctor_id: int, db: Session = Depends(get_db)):
+    return db.query(Appointment).filter(Appointment.doctor_id == doctor_id).all()
+@app.get("/myinfo/")
+def get_my_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Assuming `get_current_user` correctly identifies and returns the user object from the token
+    if current_user.role == 'patient':
+        return db.query(Patient).filter(Patient.user_id == current_user.id).first()
+    elif current_user.role == 'doctor':
+        return db.query(Doctor).filter(Doctor.user_id == current_user.id).first()  # If there's a separate Doctor model or logic
+    else:
+        raise HTTPException(status_code=404, detail="User info not available")

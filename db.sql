@@ -1,4 +1,3 @@
-ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT FALSE;
 CREATE DATABASE IF NOT EXISTS dentalhcis;
 USE dentalhcis;
 CREATE TABLE `users` (
@@ -21,4 +20,14 @@ CREATE TABLE `patients` (
     `dental_history` TEXT,
     `language_preference` VARCHAR(50),
     FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
+);
+CREATE TABLE appointments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    patient_id INT,
+    doctor_id INT,
+    scheduled_time DATETIME,
+    status ENUM('scheduled', 'completed', 'cancelled'),
+    notes VARCHAR(255),
+    FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+    FOREIGN KEY (doctor_id) REFERENCES users(id) ON DELETE CASCADE
 );
