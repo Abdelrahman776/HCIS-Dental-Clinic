@@ -35,8 +35,8 @@ class PasswordResetRequest(BaseModel):
     email: str
 
 class PasswordResetResponse(BaseModel):
-    
     message: str
+    reset_token: str 
 
 
 class RegistrationResponse(BaseModel):
@@ -165,8 +165,11 @@ def forgot_password(request: PasswordResetRequest, db: Session = Depends(get_db)
     # Use the specialized function to send the reset email
     send_password_reset_email(user.email, user.username, reset_token)
 
-    return PasswordResetResponse(message="Password reset email sent successfully")
-
+    # Include the token in the response for the front end or debugging
+    return PasswordResetResponse(
+        message="Password reset email sent successfully. Use the token to reset your password.",
+        reset_token=reset_token
+    )
 
 
 # Function to send reset email
