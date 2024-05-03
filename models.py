@@ -11,7 +11,6 @@ class User(Base):
     password_hash = Column(String(255))
     role = Column(String(255))
     email = Column(String(255), unique=True, index=True)
-    is_active = Column(Boolean, default=False)
     patients = relationship("Patient", back_populates="user")
  
 class Patient(Base):

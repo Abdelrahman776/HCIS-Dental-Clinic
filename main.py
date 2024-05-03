@@ -56,17 +56,21 @@ def root():
 
 
 def send_email(subject, receiver_email, body, smtp_server="smtp.office365.com", smtp_port=587, sender_email="dentalhcis@outlook.com", password="passwordpassword123"):
-    message = MIMEMultipart()
-    message["From"] = sender_email
-    message["To"] = receiver_email
-    message["Subject"] = subject
-    message.attach(MIMEText(body, "plain"))
+    try:
+        message = MIMEMultipart()
+        message["From"] = sender_email
+        message["To"] = receiver_email
+        message["Subject"] = subject
+        message.attach(MIMEText(body, "plain"))
 
-    server = smtplib.SMTP(smtp_server, smtp_port)
-    server.starttls()  # Secure the connection
-    server.login(sender_email, password)
-    server.sendmail(sender_email, receiver_email, message.as_string())
-    server.quit()
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()  # Secure the connection
+        server.login(sender_email, password)
+        server.sendmail(sender_email, receiver_email, message.as_string())
+        server.quit()
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
 
 # Replace "your-email@outlook.com" and "YOUR_APP_PASSWORD" with your actual Outlook email and app password.
 
@@ -101,40 +105,34 @@ def register_user(
     password: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    # Normalize and check the email for determining the role
+    # Normalize the email and determine the role based on it
     email = email.lower()
+    role = "doctor" if email.endswith("-d") else "patient"
     if email.endswith("-d"):
-        role = "doctor"
         email = email[:-2]
-    else:
-        role = "patient"
-    
+
     # Check if the user already exists
-    if db.query(User).filter((User.email == email)).first():
+    if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already in use")
 
-    # Create a new user with is_active set to False
+    # Create a new user and set is_active to True immediately
     hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    new_user = User(username=username, email=email, password_hash=hashed_password, role=role, is_active=False)
+    new_user = User(username=username, email=email, password_hash=hashed_password, role=role, is_active=True)
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    
-    # Generate a verification token
-    verification_token = create_access_token({"user_id": new_user.id}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
 
-    # Log the token to the console for testing purposes
-    print("Generated token:", verification_token)
+    # Construct and send a welcome email
+    body = f"Hello {username},\n\nWelcome to our service! We are excited to have you on board."
+    send_email("Welcome to Our Service", email, body)
 
-    # Construct the verification link
-    verification_link = f"http://127.0.0.1:8000/activate?token={verification_token}"
-    body = f"Hello {username},\n\nPlease activate your account by clicking on the link below:\n{verification_link}\n\nThank you!"
-    
-    # Send an activation email
-    send_email("Activate Your Account", email, body)
-
-    return RegistrationResponse(message="Registration successful, please check your email to activate your account.", username=username, email=email, role=role, is_active=False)
-
+    # Return a response indicating successful registration
+    return RegistrationResponse(
+        message="Registration successful, and a welcome email has been sent.",
+        username=username,
+        email=email,
+        role=role,
+    )
 
 
 
@@ -148,17 +146,8 @@ def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = D
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
 
-@app.post("/password-recovery/", response_model=RecoveryResponse)
-def request_password_recovery(username: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == username).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    send_reset_email(user.email)
-    return RecoveryResponse(message="If your account exists, a password reset link has been sent to your email.")
 
-def send_reset_email(email: str):
-    # This function should integrate with an actual email service provider.
-    print(f"Reset link would be sent to {email}")
+
 
 @app.get("/users/me/")
 def read_users_me(current_user: User = Depends(get_current_user)):
@@ -171,22 +160,26 @@ def forgot_password(request: PasswordResetRequest, db: Session = Depends(get_db)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    reset_token = create_access_token(data={"sub": user.username}, expires_delta=timedelta(minutes=15))
-
-    send_email(
-        "Password Reset Request",
-        user.email,
-        f"Hello, please follow this link to reset your password: [Link with token here]"
-    )
+    reset_token = create_access_token({"sub": user.username}, timedelta(minutes=15))
+    
+    # Use the specialized function to send the reset email
+    send_password_reset_email(user.email, user.username, reset_token)
 
     return PasswordResetResponse(message="Password reset email sent successfully")
 
 
+
 # Function to send reset email
-def send_password_reset_email(email: str, reset_token: str):
-    # This function should send an email to the user's email address
-    # with a link containing the reset_token for password reset
-    print(f"Reset link sent to {email}: {reset_token}")
+def send_password_reset_email(email: str, username: str, token: str):
+    try:
+        reset_link = f"http://yourfrontenddomain.com/reset-password?token={token}"
+        subject = "Password Reset Request"
+        body = f"Hello {username},\n\nPlease follow this link to reset your password: {reset_link}\n\nIf you did not request this, please ignore this email."
+        send_email(subject, email, body)
+    except Exception as e:
+        print(f"Failed to send password reset email: {e}")
+        # Optionally, you might want to handle this more gracefully in a production environment
+        raise HTTPException(status_code=500, detail="Failed to send password reset email.")
 
 # Endpoint to reset password using token
 @app.post("/reset-password/", response_model=PasswordResetResponse)
@@ -210,16 +203,3 @@ def reset_password(token: str, new_password: str, db: Session = Depends(get_db))
         raise HTTPException(status_code=403, detail="Invalid token")
     
 
-@app.get("/activate/")
-def activate_account(token: str, db: Session = Depends(get_db)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("user_id")
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        user.is_active = True
-        db.commit()
-        return {"message": "Account activated successfully"}
-    except jwt.JWTError:
-        raise HTTPException(status_code=400, detail="Invalid activation link")
