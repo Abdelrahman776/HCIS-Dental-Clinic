@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status , Form
+from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey , Boolean
 from sqlalchemy.orm import Session
-from models import User
+from models import User , Patient
 from database import get_db
 import bcrypt
 from pydantic import BaseModel , EmailStr
@@ -8,6 +9,7 @@ from jose import jwt, JWTError
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer , OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
+from typing import Optional
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -22,7 +24,7 @@ class RegistrationResponse(BaseModel):
     username: str
     email: str
     role: str
-    is_active: bool
+
 
 class RecoveryResponse(BaseModel):
     message: str
@@ -30,6 +32,7 @@ class RecoveryResponse(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str
+    user_id: int  # Add this line to include user_id in the response
 
 class PasswordResetRequest(BaseModel):
     email: str
@@ -45,15 +48,24 @@ class RegistrationResponse(BaseModel):
     email: str
     role: str
 
+class PatientResponse(BaseModel):
+    id: int
+    full_name: str
+    dob: datetime
+    gender: str
+    address: str
+    phone: str
+    insurance_details: Optional[str] = None
+    medical_history: Optional[str] = None
+    dental_history: Optional[str] = None
+    language_preference: Optional[str] = None
+
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 @app.get("/")
 def root():
     return RedirectResponse(url="/docs")
-
-
-
-
 
 def send_email(subject, receiver_email, body, smtp_server="smtp.office365.com", smtp_port=587, sender_email="dentalhcis@outlook.com", password="passwordpassword123"):
     try:
@@ -72,11 +84,6 @@ def send_email(subject, receiver_email, body, smtp_server="smtp.office365.com", 
         print(f"Failed to send email: {e}")
 
 
-# Replace "your-email@outlook.com" and "YOUR_APP_PASSWORD" with your actual Outlook email and app password.
-
-
-
-
 def create_access_token(data: dict, expires_delta: timedelta):
     to_encode = data.copy()
     expire = datetime.utcnow() + expires_delta
@@ -84,54 +91,57 @@ def create_access_token(data: dict, expires_delta: timedelta):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
-        user = db.query(User).filter(User.username == username).first()
-        if user is None:
-            raise HTTPException(status_code=403, detail="User not found")
-        return user
-    except JWTError:
-        raise HTTPException(status_code=403, detail="Invalid authentication token")
-    
+
 
 @app.post("/register/", response_model=RegistrationResponse)
 def register_user(
     username: str = Form(...),
     email: EmailStr = Form(...),
     password: str = Form(...),
+    full_name: str = Form(...),
+    dob_str: str = Form(...),
+    gender: str = Form(...),
+    address: str = Form(...),
+    phone: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    # Normalize the email and determine the role based on it
     email = email.lower()
     role = "doctor" if email.endswith("-d") else "patient"
     if email.endswith("-d"):
         email = email[:-2]
 
-    # Check if the user already exists
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already in use")
+    
+    try:
+        dob = datetime.strptime(dob_str, "%Y-%m-%d")  # Parse the date string
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid date format")
 
-    # Create a new user and set is_active to True immediately
     hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    new_user = User(username=username, email=email, password_hash=hashed_password, role=role, is_active=True)
+    new_user = User(username=username, email=email, password_hash=hashed_password, role=role)
     db.add(new_user)
     db.commit()
-    db.refresh(new_user)
+    if role == "patient":
+        new_patient = Patient(
+            user_id=new_user.id,
+            full_name=full_name,
+            dob=dob,
+            gender=gender,
+            address=address,
+            phone=phone
+        )
+        db.add(new_patient)
+        db.commit()
 
-    # Construct and send a welcome email
-    body = f"Hello {username},\n\nWelcome to our service! We are excited to have you on board."
+    body = f"Hello {full_name},\n\nWelcome to our service! We are excited to have you on board."
     send_email("Welcome to Our Service", email, body)
 
-    # Return a response indicating successful registration
     return RegistrationResponse(
         message="Registration successful, and a welcome email has been sent.",
         username=username,
         email=email,
-        role=role,
+        role=role
     )
 
 
@@ -140,18 +150,13 @@ def register_user(
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if user and bcrypt.checkpw(form_data.password.encode(), user.password_hash.encode()):
-        access_token = create_access_token(data={"sub": user.username}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-        return {"access_token": access_token, "token_type": "bearer"}
+        # Create the access token as before
+        access_token = create_access_token(data={"sub": user.username, "user_id": user.id},  # Include user ID in the token as well for use in other parts of your application
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+        return LoginResponse(access_token=access_token, token_type="bearer", user_id=user.id)
     else:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-
-
-
-
-@app.get("/users/me/")
-def read_users_me(current_user: User = Depends(get_current_user)):
-    return current_user
 
 
 @app.post("/forgot-password/", response_model=PasswordResetResponse)
@@ -205,4 +210,32 @@ def reset_password(token: str, new_password: str, db: Session = Depends(get_db))
     except JWTError as e:
         raise HTTPException(status_code=403, detail="Invalid token")
     
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=403, detail="Invalid authentication credentials")
+        user = db.query(User).filter(User.username == username).first()
+        if user is None:
+            raise HTTPException(status_code=403, detail="User not found")
+        return user
+    except JWTError:
+        raise HTTPException(status_code=403, detail="Invalid authentication token")
+
+
+@app.get("/patients/{user_id}/", response_model=PatientResponse)
+async def get_patient_data(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Query the database for the patient
+    patient = db.query(Patient).filter(Patient.user_id == user_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    # Check if the current user is authorized to access patient data
+    if current_user.role not in ['doctor', 'admin'] and current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access patient data")
+
+    # Convert the SQLAlchemy model instance to the Pydantic model instance
+    return patient
 
