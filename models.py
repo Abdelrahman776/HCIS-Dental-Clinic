@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Text, Enum, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Text, Enum, DateTime , Float
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 Base = declarative_base()
@@ -51,3 +51,23 @@ class Appointment(Base):
     # Relationships to User and Patient
     patient = relationship("Patient", back_populates="appointments")
     doctor = relationship("User", back_populates="appointments")
+
+
+
+class Bill(Base):
+    __tablename__ = 'bills'
+    id = Column(Integer, primary_key=True)
+    patient_id = Column(Integer, ForeignKey('patients.id'))
+    amount_due = Column(Float)
+    due_date = Column(DateTime)
+    status = Column(String(255), default='unpaid')
+    payments = relationship('Payment', back_populates='bill')
+
+class Payment(Base):
+    __tablename__ = 'payments'
+    id = Column(Integer, primary_key=True)
+    bill_id = Column(Integer, ForeignKey('bills.id'))
+    amount = Column(Float)
+    payment_method = Column(String(255))
+    bill = relationship('Bill', back_populates='payments')
+

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status , Form
 from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey , Boolean
 from sqlalchemy.orm import Session
-from models import User , Patient , Appointment , Doctor
+from models import User , Patient , Appointment , Doctor , Bill , Payment
 from database import get_db
 import bcrypt
 from pydantic import BaseModel , EmailStr
@@ -65,8 +65,64 @@ class DoctorResponse(BaseModel):
     email: str
     role: str  # This assumes role is a field in your User model
 
-    # Add other fields that might be relevant for the patient to choose a doctor.
+class UserProfile(BaseModel):
+    username: str
+    email: str
+    full_name: Optional[str] = None
+    dob: Optional[datetime] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    role: str
+class UserProfileUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    dob: Optional[str] = None  # We will accept string and parse it to date
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
 
+class CreateBill(BaseModel):
+    patient_id: int
+    amount_due: float
+    due_date: datetime
+    status: Optional[str] = 'unpaid'  # Set 'unpaid' as default status
+
+
+
+
+class ProcessPayment(BaseModel):
+    bill_id: int
+    amount_paid: float
+    payment_method: str
+
+
+class BillResponseModel(BaseModel):
+    id: int
+    patient_id: int
+    amount_due: float
+    due_date: datetime
+    status: str
+
+    class Config:
+        orm_mode = True
+
+class PaymentResponseModel(BaseModel):
+    id: int
+    patient_id: int
+    amount: float
+    payment_method: str
+    status: str
+
+    class Config:
+        orm_mode = True
+
+class PaymentResponse(BaseModel):
+    id: int
+    bill_id: int
+    amount: float
+    payment_method: str
+    class Config:
+        orm_mode = True 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 @app.get("/")
@@ -286,14 +342,26 @@ def read_patient_appointments(patient_id: int, db: Session = Depends(get_db)):
 def read_doctor_appointments(doctor_id: int, db: Session = Depends(get_db)):
     return db.query(Appointment).filter(Appointment.doctor_id == doctor_id).all()
 
-@app.get("/myinfo/")
+@app.get("/myinfo/", response_model=UserProfile)  # Use a unified response model that can include optional fields for different roles
 def get_my_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user_profile = db.query(User).filter(User.id == current_user.id).first()
+    extra_info = {}
     if current_user.role == 'patient':
-        return db.query(Patient).filter(Patient.user_id == current_user.id).first()
+        patient_info = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+        extra_info = {
+            "medical_history": patient_info.medical_history if patient_info else None,
+            "dental_history": patient_info.dental_history if patient_info else None
+        }
     elif current_user.role == 'doctor':
-        return db.query(Doctor).filter(Doctor.user_id == current_user.id).first()
+        doctor_info = db.query(Doctor).filter(Doctor.user_id == current_user.id).first()
+        extra_info = {
+            "specialization": doctor_info.specialization if doctor_info else None
+        }
     else:
         raise HTTPException(status_code=404, detail="User info not available")
+
+    return {**user_profile.dict(), **extra_info}  # Combine the basic user profile with role-specific details
+
 @app.get("/doctors/", response_model=List[DoctorResponse])
 def list_doctors(db: Session = Depends(get_db)):
     try:
@@ -302,4 +370,50 @@ def list_doctors(db: Session = Depends(get_db)):
             raise HTTPException(status_code=404, detail="No doctors found")
         return doctors
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) 
+@app.put("/users/me/", response_model=UserProfile)
+async def update_user_profile(update_data: UserProfileUpdateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user_data = update_data.dict(exclude_unset=True)
+    for key, value in user_data.items():
+        if key == 'dob' and value:
+            value = datetime.strptime(value, "%Y-%m-%d")  # Parse string to datetime object
+        setattr(current_user, key, value)
+    
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+def mock_payment_gateway(amount, payment_method):
+    print(f"Mock payment of ${amount} using {payment_method}")
+    return True  # Simulate a successful payment
+@app.post("/bills/", response_model=BillResponseModel)
+def create_bill(bill: CreateBill, db: Session = Depends(get_db)):
+    # Create a new bill with default status if not provided
+    new_bill = Bill(
+        patient_id=bill.patient_id,
+        amount_due=bill.amount_due,
+        due_date=bill.due_date,
+        status=bill.status if bill.status else 'unpaid'
+    )
+    db.add(new_bill)
+    db.commit()
+    db.refresh(new_bill)
+    return new_bill
+
+
+@app.post("/payments/", response_model=PaymentResponse)
+def process_payment(payment_data: ProcessPayment, db: Session = Depends(get_db)):
+    bill = db.query(Bill).filter(Bill.id == payment_data.bill_id).first()
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+
+    new_payment = Payment(
+        bill_id=bill.id,
+        amount=payment_data.amount_paid,
+        payment_method=payment_data.payment_method
+    )
+    db.add(new_payment)
+    db.commit()
+    db.refresh(new_payment)
+    return new_payment
+
