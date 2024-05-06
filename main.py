@@ -81,6 +81,15 @@ class UserProfileUpdateRequest(BaseModel):
     address: Optional[str] = None
     phone: Optional[str] = None
 
+class UserUpdateModel(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    dob: Optional[datetime] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+
 class CreateBill(BaseModel):
     patient_id: int
     amount_due: float
@@ -416,4 +425,55 @@ def process_payment(payment_data: ProcessPayment, db: Session = Depends(get_db))
     db.commit()
     db.refresh(new_payment)
     return new_payment
+
+
+@app.delete("/users/{user_id}")
+def delete_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    
+    
+    user_to_delete = db.query(User).filter(User.id == user_id).first()
+    if not user_to_delete:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    db.delete(user_to_delete)
+    db.commit()
+    return {"message": "User successfully deleted"}
+
+
+@app.get("/users")
+def view_all_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    
+    users = db.query(User).all()
+    return users
+
+@app.get("/patients")
+def view_all_patients(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    
+    patients = db.query(Patient).all()
+    return patients
+
+@app.get("/staff")
+def view_all_staff(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role != 'admin':
+        raise HTTPException(status_code=403, detail="Access denied: Admin privileges required.")
+    
+    staff = db.query(staff).all()
+    return staff
+
+@app.put("/users/{user_id}")
+def update_user(user_id: int, user_update: UserUpdateModel, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role != 'admin':
+        raise HTTPException(status_code=403, detail="Access denied: Admin privileges required.")
+
+    user_to_update = db.query(User).filter(User.id == user_id).first()
+    if not user_to_update:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user_data = user_update.dict(exclude_unset=True)
+    for key, value in user_data.items():
+        if hasattr(user_to_update, key):
+            setattr(user_to_update, key, value)
+
+    db.commit()
+    return {"message": "User data successfully updated", "user": user_to_update.username}  # Returning username for confirmation
 
