@@ -417,3 +417,47 @@ def process_payment(payment_data: ProcessPayment, db: Session = Depends(get_db))
     db.refresh(new_payment)
     return new_payment
 
+@app.get("/clinical-performance/")
+def clinical_performance(db: Session = Depends(get_db)):
+    completed_appointments = db.query(Appointment).filter(Appointment.status == 'completed').count()
+    canceled_appointments = db.query(Appointment).filter(Appointment.status == 'cancelled').count()
+    
+    # Calculate most/least used services based on appointment data
+    # Replace 'service_field' with the actual field in your Appointment model representing services
+    most_used_service = db.query(Appointment.service_field).group_by(Appointment.service_field).order_by(func.count().desc()).first()
+    least_used_service = db.query(Appointment.service_field).group_by(Appointment.service_field).order_by(func.count()).first()
+    
+    return {
+        "completed_appointments": completed_appointments,
+        "canceled_appointments": canceled_appointments,
+        "most_used_service": most_used_service,
+        "least_used_service": least_used_service
+    }
+
+@app.get("/patient-statistics/")
+def patient_statistics(db: Session = Depends(get_db)):
+    gender_distribution = db.query(Patient.gender, func.count()).group_by(Patient.gender).all()
+    # Calculate age distribution based on date of birth
+    # Replace 'dob' with the actual field representing date of birth in your Patient model
+    age_distribution = db.query(func.floor(func.datediff(datetime.now(), Patient.dob) / 365), func.count()).group_by(func.floor(func.datediff(datetime.now(), Patient.dob) / 365)).all()
+    total_patients = db.query(Patient).count()
+    
+    return {
+        "gender_distribution": gender_distribution,
+        "age_distribution": age_distribution,
+        "total_patients": total_patients
+    }
+
+@app.get("/financial-insights/")
+def financial_insights(db: Session = Depends(get_db)):
+    total_amount_due = db.query(func.sum(Bill.amount_due)).scalar()
+    total_amount_paid = db.query(func.sum(Payment.amount)).scalar()
+    total_doctors = db.query(Doctor).count()
+    total_patients = db.query(Patient).count()
+    
+    return {
+        "total_amount_due": total_amount_due,
+        "total_amount_paid": total_amount_paid,
+        "total_doctors": total_doctors,
+        "total_patients": total_patients
+    }
