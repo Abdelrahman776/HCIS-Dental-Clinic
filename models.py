@@ -78,4 +78,4 @@ class Payment(Base):
 # gender , age , no of appointments , no of cancelled appointments , no of completed appointments , total amount due , total amount paid , no of patients , no of doctors ,most used service , least used service ,
 # most used doctor , least used doctor 
 
-# 
+# patient medical record  contains the medical record of the patient,his allergies,medications,diagnosis,lab results,imaging results,consultation notes,medical history,dental history,insurance details,language preference
