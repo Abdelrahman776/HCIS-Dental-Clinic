@@ -10,7 +10,6 @@ class User(Base):
     password_hash = Column(String(255))
     role = Column(String(50))
     email = Column(String(255), unique=True)
-    # Relationship to Patient and Appointment
     patients = relationship("Patient", back_populates="user")
     doctor = relationship("Doctor", back_populates="user", uselist=False)
     appointments = relationship("Appointment", back_populates="doctor", foreign_keys="[Appointment.doctor_id]")
@@ -29,7 +28,6 @@ class Patient(Base):
     medical_history = Column(Text)
     dental_history = Column(Text)
     language_preference = Column(String(50))
-    # Relationship to Appointment
     appointments = relationship("Appointment", back_populates="patient", foreign_keys="[Appointment.patient_id]")
 
 class Doctor(Base):

@@ -13,6 +13,11 @@ from typing import Optional , List
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import stripe
+
+# Set your secret key. Remember to switch to your live secret key in production.
+# See your keys here: https://dashboard.stripe.com/apikeys
+stripe.api_key = 'sk_test_51PGLSz08Zs9MquJ9jqBzbXGMWraK3ZbUKsOr0Xya8hjZHggvSNy8RwXai7qRLqvThwib4y14Tw99pI6WJazp6GhI00BtA0BnI9'
 
 app = FastAPI()
 
@@ -123,6 +128,20 @@ class PaymentResponse(BaseModel):
     payment_method: str
     class Config:
         orm_mode = True 
+
+class PatientResponse(BaseModel):
+    id: int
+    full_name: str
+    dob: datetime
+    gender: str
+    address: str
+    phone: str
+    email: str
+    insurance_details: Optional[str] = None
+    medical_history: Optional[str] = None
+    dental_history: Optional[str] = None
+    language_preference: Optional[str] = None
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 @app.get("/")
@@ -406,14 +425,52 @@ def process_payment(payment_data: ProcessPayment, db: Session = Depends(get_db))
     bill = db.query(Bill).filter(Bill.id == payment_data.bill_id).first()
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    if bill.status == 'paid':
+        raise HTTPException(status_code=400, detail="This bill has already been paid.")
 
-    new_payment = Payment(
-        bill_id=bill.id,
-        amount=payment_data.amount_paid,
-        payment_method=payment_data.payment_method
+    # Attempt to charge the customer using Stripe
+    try:
+        charge = stripe.Charge.create(
+            amount=int(payment_data.amount_paid * 100),  # amount in cents
+            currency="usd",
+            source=payment_data.payment_method,  # obtained with Stripe.js
+            description=f"Charge for bill {bill.id}"
+        )
+        bill.status = 'paid'
+        db.commit()
+
+        new_payment = Payment(
+            bill_id=bill.id,
+            amount=payment_data.amount_paid,
+            payment_method=payment_data.payment_method,
+            status='paid' if charge['paid'] else 'failed'
+        )
+        db.add(new_payment)
+        db.commit()
+        db.refresh(new_payment)
+        return new_payment
+    except stripe.error.StripeError as e:
+        # Handle the case where the charge fails
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/user_info", response_model=PatientResponse)
+async def get_user_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    
+    return PatientResponse(
+        id=patient.id,
+        full_name=patient.full_name,
+        dob=patient.dob,
+        gender=patient.gender,
+        address=patient.address,
+        phone=patient.phone,
+        email=current_user.email,
+        insurance_details=patient.insurance_details,
+        medical_history=patient.medical_history,
+        dental_history=patient.dental_history,
+        language_preference=patient.language_preference
     )
-    db.add(new_payment)
-    db.commit()
-    db.refresh(new_payment)
-    return new_payment
+
 
