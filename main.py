@@ -108,8 +108,6 @@ class BillResponseModel(BaseModel):
     due_date: datetime
     status: str
 
-    class Config:
-        orm_mode = True
 
 class PaymentResponseModel(BaseModel):
     id: int
@@ -118,16 +116,14 @@ class PaymentResponseModel(BaseModel):
     payment_method: str
     status: str
 
-    class Config:
-        orm_mode = True
+
 
 class PaymentResponse(BaseModel):
     id: int
     bill_id: int
     amount: float
     payment_method: str
-    class Config:
-        orm_mode = True 
+
 
 class PatientResponse(BaseModel):
     id: int
