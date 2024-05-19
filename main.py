@@ -16,8 +16,12 @@ from email.mime.multipart import MIMEMultipart
 import stripe
 import PyPDF2
 from sqlalchemy.orm import Session
+<<<<<<< Updated upstream
 from models import MedicalHistory  # Import the MedicalHistory model
 
+=======
+from models import MedicalHistory
+>>>>>>> Stashed changes
 # Set your secret key. Remember to switch to your live secret key in production.
 # See your keys here: https://dashboard.stripe.com/apikeys
 stripe.api_key = 'sk_test_51PGLSz08Zs9MquJ9jqBzbXGMWraK3ZbUKsOr0Xya8hjZHggvSNy8RwXai7qRLqvThwib4y14Tw99pI6WJazp6GhI00BtA0BnI9'
@@ -579,7 +583,12 @@ def financial_insights(db: Session = Depends(get_db)):
     }
 
 
+<<<<<<< Updated upstream
 
+=======
+# get patient records from pdf
+  # Import the MedicalHistory model
+>>>>>>> Stashed changes
 
 @app.post("/medical-history/{patient_id}/")
 async def upload_medical_history(patient_id: int, pdf_file: UploadFile = File(...), db: Session = Depends(get_db)):
