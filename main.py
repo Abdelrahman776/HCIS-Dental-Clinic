@@ -14,6 +14,9 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import stripe
+import PyPDF2
+from sqlalchemy.orm import Session
+from models import MedicalHistory  # Import the MedicalHistory model
 
 # Set your secret key. Remember to switch to your live secret key in production.
 # See your keys here: https://dashboard.stripe.com/apikeys
@@ -530,3 +533,90 @@ def update_user(user_id: int, user_update: UserUpdateModel, db: Session = Depend
     db.commit()
     return {"message": "User data successfully updated", "user": user_to_update.username}  # Returning username for confirmation
 
+@app.get("/clinical-performance/")
+def clinical_performance(db: Session = Depends(get_db)):
+    completed_appointments = db.query(Appointment).filter(Appointment.status == 'completed').count()
+    canceled_appointments = db.query(Appointment).filter(Appointment.status == 'cancelled').count()
+    
+    # Calculate most/least used services based on appointment data
+    # Replace 'service_field' with the actual field in your Appointment model representing services
+    most_used_service = db.query(Appointment.service_field).group_by(Appointment.service_field).order_by(func.count().desc()).first()
+    least_used_service = db.query(Appointment.service_field).group_by(Appointment.service_field).order_by(func.count()).first()
+    
+    return {
+        "completed_appointments": completed_appointments,
+        "canceled_appointments": canceled_appointments,
+        "most_used_service": most_used_service,
+        "least_used_service": least_used_service
+    }
+
+@app.get("/patient-statistics/")
+def patient_statistics(db: Session = Depends(get_db)):
+    gender_distribution = db.query(Patient.gender, func.count()).group_by(Patient.gender).all()
+    # Calculate age distribution based on date of birth
+    # Replace 'dob' with the actual field representing date of birth in your Patient model
+    age_distribution = db.query(func.floor(func.datediff(datetime.now(), Patient.dob) / 365), func.count()).group_by(func.floor(func.datediff(datetime.now(), Patient.dob) / 365)).all()
+    total_patients = db.query(Patient).count()
+    
+    return {
+        "gender_distribution": gender_distribution,
+        "age_distribution": age_distribution,
+        "total_patients": total_patients
+    }
+
+@app.get("/financial-insights/")
+def financial_insights(db: Session = Depends(get_db)):
+    total_amount_due = db.query(func.sum(Bill.amount_due)).scalar()
+    total_amount_paid = db.query(func.sum(Payment.amount)).scalar()
+    total_doctors = db.query(Doctor).count()
+    total_patients = db.query(Patient).count()
+    
+    return {
+        "total_amount_due": total_amount_due,
+        "total_amount_paid": total_amount_paid,
+        "total_doctors": total_doctors,
+        "total_patients": total_patients
+    }
+
+
+
+
+@app.post("/medical-history/{patient_id}/")
+async def upload_medical_history(patient_id: int, pdf_file: UploadFile = File(...), db: Session = Depends(get_db)):
+    # Check if the current user has permission to upload medical records
+    # You might want to implement authorization logic here
+
+    # Read the PDF file
+    pdf_content = await pdf_file.read()
+
+    # Extract text from the PDF
+    pdf_text = extract_text_from_pdf(pdf_content)
+
+    # Parse the extracted text to extract medical history information
+    medical_history_data = parse_medical_history_text(pdf_text)
+
+    # Store the medical history information in the database
+    medical_history = MedicalHistory(patient_id=patient_id, **medical_history_data)
+    db.add(medical_history)
+    db.commit()
+
+    return {"detail": "Medical history uploaded successfully"}
+
+def extract_text_from_pdf(pdf_content: bytes) -> str:
+    pdf_reader = PyPDF2.PdfFileReader(io.BytesIO(pdf_content))
+    text = ""
+    for page_num in range(pdf_reader.numPages):
+        text += pdf_reader.getPage(page_num).extractText()
+    return text
+
+def parse_medical_history_text(text: str) -> dict:
+    # Implement your logic to parse the text and extract medical history information
+    # This can be done using regex or other text processing techniques
+    # In this example, we assume a simple parsing where each line contains a field and its corresponding value
+    medical_history_data = {}
+    lines = text.split("\n")
+    for line in lines:
+        if ":" in line:
+            field, value = line.split(":", 1)
+            medical_history_data[field.strip().lower().replace(" ", "_")] = value.strip()
+    return medical_history_data
