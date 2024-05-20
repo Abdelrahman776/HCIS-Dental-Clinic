@@ -182,9 +182,12 @@ def send_email(subject, receiver_email, body, smtp_server="smtp.office365.com", 
     except Exception as e:
         print(f"Failed to send email: {e}")
 
-def create_access_token(data: dict, expires_delta: timedelta):
+def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
-    expire = datetime.utcnow() + expires_delta
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
@@ -284,14 +287,23 @@ def register_user(
     }
 
 
+
+
 @app.post("/login/", response_model=LoginResponse)
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
-    if user and bcrypt.checkpw(form_data.password.encode(), user.password_hash.encode()):
-        access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-        return LoginResponse(access_token=access_token, token_type="bearer", user_id=user.id, role=user.role)
+    if user:
+        logging.info(f"User found: {user.username}")
+        if bcrypt.checkpw(form_data.password.encode(), user.password_hash.encode()):
+            logging.info("Password matched")
+            access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+            return LoginResponse(access_token=access_token, token_type="bearer", user_id=user.id, role=user.role)
+        else:
+            logging.error("Password did not match")
     else:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        logging.error("User not found")
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
 
 
 @app.post("/forgot-password/", response_model=PasswordResetResponse)
