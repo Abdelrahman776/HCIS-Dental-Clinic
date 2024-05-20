@@ -12,7 +12,8 @@ class User(Base):
     email = Column(String(255), unique=True)
     patients = relationship("Patient", back_populates="user")
     doctor = relationship("Doctor", back_populates="user", uselist=False)
-    appointments = relationship("Appointment", back_populates="doctor", foreign_keys="[Appointment.doctor_id]")
+    # appointments might not be needed here unless non-doctors can have appointments
+
 
 class Patient(Base):
     __tablename__ = 'patients'
@@ -48,18 +49,20 @@ class Doctor(Base):
     specialization = Column(String(255))
     consultation_hours = Column(String(255))
     user = relationship("User", back_populates="doctor")
+    appointments = relationship("Appointment", back_populates="doctor")  # Add this line
+
 
 class Appointment(Base):
     __tablename__ = 'appointments'
     id = Column(Integer, primary_key=True)
     patient_id = Column(Integer, ForeignKey('patients.id'))
-    doctor_id = Column(Integer, ForeignKey('users.id'))
+    doctor_id = Column(Integer, ForeignKey('doctors.id'))
     scheduled_time = Column(DateTime)
     status = Column(Enum('scheduled', 'completed', 'cancelled', name='status_types'))
     notes = Column(String, nullable=True)
-    # Relationships to User and Patient
     patient = relationship("Patient", back_populates="appointments")
-    doctor = relationship("User", back_populates="appointments")
+    doctor = relationship("Doctor", back_populates="appointments")  # Link to Doctor, not User
+
 
 
 
@@ -80,14 +83,3 @@ class Payment(Base):
     payment_method = Column(String(255))
     bill = relationship('Bill', back_populates='payments')
 
-
-
-
-#table servics  contains clinic services and their prices
-
-
-# analysis table contains the analysis of the patient
-# gender , age , no of appointments , no of cancelled appointments , no of completed appointments , total amount due , total amount paid , no of patients , no of doctors ,most used service , least used service ,
-# most used doctor , least used doctor 
-
-# patient medical record  contains the medical record of the patient,his allergies,medications,diagnosis,lab results,imaging results,consultation notes,medical history,dental history,insurance details,language preference

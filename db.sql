@@ -35,8 +35,9 @@ CREATE TABLE appointments (
     status ENUM('scheduled', 'completed', 'cancelled'),
     notes TEXT,
     FOREIGN KEY (patient_id) REFERENCES patients(id),
-    FOREIGN KEY (doctor_id) REFERENCES users(id)
+    FOREIGN KEY (doctor_id) REFERENCES doctors(id)  -- Changed to reference doctors.id
 );
+
 
 CREATE TABLE bills (
     id INT AUTO_INCREMENT PRIMARY KEY,

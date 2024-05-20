@@ -59,8 +59,7 @@ class PatientResponse(BaseModel):
     phone: str
     insurance_details: Optional[str] = None
     medical_history: Optional[str] = None
-    dental_history: Optional[str] = None
-    language_preference: Optional[str] = None
+
 
 class AppointmentCreate(BaseModel):
     patient_id: int
@@ -150,6 +149,17 @@ class PatientResponse(BaseModel):
     dental_history: Optional[str] = None
     language_preference: Optional[str] = None
 
+
+
+class DoctorResponse(BaseModel):
+    username: str
+    email: str
+    role: str
+    specialization: str
+    consultation_hours: str
+
+
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 @app.get("/")
@@ -179,6 +189,21 @@ def create_access_token(data: dict, expires_delta: timedelta):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+from fastapi import HTTPException, Form, Depends
+from pydantic import EmailStr
+from sqlalchemy.orm import Session
+from datetime import datetime
+import bcrypt
+from models import User, Patient, Doctor  # Ensure these are imported or defined in your context
+
+from fastapi import HTTPException, Form, Depends
+from pydantic import EmailStr
+from sqlalchemy.orm import Session
+from datetime import datetime
+import bcrypt
+from models import User, Patient, Doctor  # Ensure these are imported or defined in your context
+from sqlalchemy.exc import IntegrityError
+
 @app.post("/register/", response_model=RegistrationResponse)
 def register_user(
     username: str = Form(...),
@@ -189,6 +214,8 @@ def register_user(
     gender: str = Form(...),
     address: str = Form(...),
     phone: str = Form(...),
+    specialization: str = Form(None),  # Optional field for doctors
+    consultation_hours: str = Form(None),  # Optional field for doctors
     db: Session = Depends(get_db)
 ):
     email = email.lower()
@@ -196,39 +223,66 @@ def register_user(
     if email.endswith("-d"):
         email = email[:-2]
 
-    if db.query(User).filter(User.email == email).first():
-        raise HTTPException(status_code=400, detail="Email already in use")
-    
+    # Check if the email or username already exists in the database
+    existing_user = db.query(User).filter((User.email == email) | (User.username == username)).first()
+    if existing_user:
+        if existing_user.email == email:
+            raise HTTPException(status_code=400, detail="Email already in use")
+        elif existing_user.username == username:
+            raise HTTPException(status_code=400, detail="Username already in use")
+
     try:
         dob = datetime.strptime(dob_str, "%Y-%m-%d")  # Parse the date string
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid date format")
 
     hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    new_user = User(username=username, email=email, password_hash=hashed_password, role=role)
-    db.add(new_user)
-    db.commit()
-    if role == "patient":
-        new_patient = Patient(
-            user_id=new_user.id,
-            full_name=full_name,
-            dob=dob,
-            gender=gender,
-            address=address,
-            phone=phone
-        )
-        db.add(new_patient)
-        db.commit()
 
+    # Create a new user instance
+    new_user = User(username=username, email=email, password_hash=hashed_password, role=role)
+
+    try:
+        # Start the transaction
+        db.add(new_user)
+        db.flush()  # Flush here to catch any integrity errors early
+
+        if role == "patient":
+            new_patient = Patient(
+                user_id=new_user.id,
+                full_name=full_name,
+                dob=dob,
+                gender=gender,
+                address=address,
+                phone=phone
+            )
+            db.add(new_patient)
+        elif role == "doctor":
+            if not specialization or not consultation_hours:
+                raise HTTPException(status_code=422, detail="Specialization and consultation hours are required for doctors")
+            new_doctor = Doctor(
+                user_id=new_user.id,
+                specialization=specialization,
+                consultation_hours=consultation_hours
+            )
+            db.add(new_doctor)
+
+        db.commit()  # Commit the transaction
+
+    except IntegrityError:
+        db.rollback()  # Roll back the transaction on error
+        raise HTTPException(status_code=500, detail="Failed to register user")
+
+    # Assuming send_email is defined elsewhere
     body = f"Hello {full_name},\n\nWelcome to our service! We are excited to have you on board."
     send_email("Welcome to Our Service", email, body)
 
-    return RegistrationResponse(
-        message="Registration successful, and a welcome email has been sent.",
-        username=username,
-        email=email,
-        role=role
-    )
+    return {
+        "message": "Registration successful, and a welcome email has been sent.",
+        "username": username,
+        "email": email,
+        "role": role
+    }
+
 
 @app.post("/login/", response_model=LoginResponse)
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -267,9 +321,13 @@ def send_password_reset_email(email: str, username: str, token: str):
 
 @app.post("/reset-password/", response_model=PasswordResetResponse)
 def reset_password(token: str, new_password: str, db: Session = Depends(get_db)):
+    print("Token:", token)
+    print("New Password:", new_password)
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
+
         if not username:
             raise HTTPException(status_code=403, detail="Invalid token")
         
@@ -278,7 +336,7 @@ def reset_password(token: str, new_password: str, db: Session = Depends(get_db))
             hashed_password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
             user.password_hash = hashed_password
             db.commit()
-            return PasswordResetResponse(message="Password reset successful")
+            return PasswordResetResponse(message="Password reset successful", reset_token=token)  # Include reset_token in the response
         else:
             raise HTTPException(status_code=404, detail="User not found")
     except JWTError as e:
@@ -308,19 +366,30 @@ async def get_patient_data(user_id: int, db: Session = Depends(get_db), current_
 
     return patient
 
+from fastapi import HTTPException, Depends
+from sqlalchemy.orm import Session
+import logging
+
 @app.post("/appointments/", response_model=AppointmentCreate)
 def schedule_appointment(
     appointment_data: AppointmentCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    # Logging current user role and ID
+    logging.info(f"Current User ID: {current_user.id}, Role: {current_user.role}")
+
     # Ensure current_user is a patient
     if current_user.role != "patient":
         raise HTTPException(status_code=403, detail="Only patients can schedule appointments.")
 
+    # Logging doctor ID being searched
+    logging.info(f"Searching for Doctor ID: {appointment_data.doctor_id}")
+
     # Ensure the doctor exists
     doctor = db.query(Doctor).filter(Doctor.id == appointment_data.doctor_id).first()
     if not doctor:
+        logging.error("Doctor not found")
         raise HTTPException(status_code=404, detail="Doctor not found")
 
     # Create the appointment
@@ -333,7 +402,11 @@ def schedule_appointment(
     )
     db.add(new_appointment)
     db.commit()
+    
+    logging.info("Appointment scheduled successfully")
     return new_appointment
+
+
 
 
 @app.put("/appointments/{appointment_id}/", response_model=AppointmentCreate)
@@ -389,15 +462,31 @@ def get_my_info(current_user: User = Depends(get_current_user), db: Session = De
 
     return {**user_profile.dict(), **extra_info}  # Combine the basic user profile with role-specific details
 
+from sqlalchemy.orm import joinedload
+
 @app.get("/doctors/", response_model=List[DoctorResponse])
 def list_doctors(db: Session = Depends(get_db)):
     try:
-        doctors = db.query(User).filter(User.role == 'doctor').all()
+        # Ensure you are loading the necessary user data as well
+        doctors = db.query(Doctor).options(joinedload(Doctor.user)).all()
         if not doctors:
             raise HTTPException(status_code=404, detail="No doctors found")
-        return doctors
+
+        # Map the data to your response model properly
+        result = []
+        for doctor in doctors:
+            doctor_data = {
+                "username": doctor.user.username,
+                "email": doctor.user.email,
+                "role": doctor.user.role,
+                "specialization": doctor.specialization,
+                "consultation_hours": doctor.consultation_hours
+            }
+            result.append(doctor_data)
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.put("/users/me/", response_model=UserProfile)
 async def update_user_profile(update_data: UserProfileUpdateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     user_data = update_data.dict(exclude_unset=True)
