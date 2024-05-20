@@ -39,6 +39,16 @@ class Patient(Base):
     appointments = relationship("Appointment", back_populates="patient")
     medical_history = relationship('MedicalHistory', back_populates='patient', uselist=False)
 
+class Appointment(Base):
+    __tablename__ = 'appointments'
+    id = Column(Integer, primary_key=True)
+    patient_id = Column(Integer, ForeignKey('patients.id'))
+    doctor_id = Column(Integer, ForeignKey('doctors.id'))
+    scheduled_time = Column(DateTime)
+    status = Column(Enum('scheduled', 'completed', 'cancelled', name='status_types'))
+    notes = Column(String(255), nullable=True)
+    patient = relationship("Patient", back_populates="appointments")
+    doctor = relationship("Doctor", back_populates="appointments")
 class MedicalHistory(Base):
     __tablename__ = 'medical_history'
     id = Column(Integer, primary_key=True)
@@ -50,17 +60,6 @@ class MedicalHistory(Base):
     imaging_results = Column(Text)
     consultation_notes = Column(Text)
     patient = relationship('Patient', back_populates='medical_history')
-
-class Appointment(Base):
-    __tablename__ = 'appointments'
-    id = Column(Integer, primary_key=True)
-    patient_id = Column(Integer, ForeignKey('patients.id'))
-    doctor_id = Column(Integer, ForeignKey('doctors.id'))
-    scheduled_time = Column(DateTime)
-    status = Column(Enum('scheduled', 'completed', 'cancelled', name='status_types'))
-    notes = Column(String(255), nullable=True)
-    patient = relationship("Patient", back_populates="appointments")
-    doctor = relationship("Doctor", back_populates="appointments")
 
 class Bill(Base):
     __tablename__ = 'bills'

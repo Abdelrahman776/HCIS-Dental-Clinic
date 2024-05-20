@@ -1,10 +1,10 @@
 from fastapi import FastAPI, Depends, HTTPException, status , Form
 from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey , Boolean
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session ,joinedload
 from models import User , Patient , Appointment , Doctor , Bill , Payment
 from database import get_db
 import bcrypt
-from pydantic import BaseModel , EmailStr
+from pydantic import BaseModel , EmailStr  , Field
 from jose import jwt, JWTError
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer , OAuth2PasswordRequestForm
@@ -60,10 +60,19 @@ class PatientResponse(BaseModel):
     language_preference: Optional[str] = None
 
 class AppointmentCreate(BaseModel):
+    id: Optional[int] = None
     patient_id: int
     doctor_id: int
     scheduled_time: datetime
+    status: str
     notes: Optional[str] = None
+    patient_name: Optional[str] = Field(None, alias="patientName")
+    doctor_name: Optional[str] = Field(None, alias="doctorName")
+
+class AppointmentCreateRequest(BaseModel):
+    doctor_id: int
+    scheduled_time: datetime
+    notes: str = None
 class DoctorResponse(BaseModel):
     id: int
     username: str
@@ -127,16 +136,14 @@ class PaymentResponse(BaseModel):
 
 class PatientResponse(BaseModel):
     id: int
-    full_name: str
-    dob: datetime
-    gender: str
-    address: str
-    phone: str
-    email: str
-    insurance_details: Optional[str] = None
-    medical_history: Optional[str] = None
-    dental_history: Optional[str] = None
-    language_preference: Optional[str] = None
+    full_name: Optional[str] = None
+    dob: Optional[datetime] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: EmailStr
+    role: str
+    username: str
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
@@ -284,7 +291,6 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         return user
     except JWTError:
         raise HTTPException(status_code=403, detail="Invalid authentication token")
-
 @app.get("/patients/{user_id}/", response_model=PatientResponse)
 async def get_patient_data(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     patient = db.query(Patient).filter(Patient.user_id == user_id).first()
@@ -293,27 +299,42 @@ async def get_patient_data(user_id: int, db: Session = Depends(get_db), current_
 
     if current_user.role not in ['doctor', 'admin'] and current_user.id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to access patient data")
+    
+    user = db.query(User).filter(User.id == patient.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-    return patient
+    return PatientResponse(
+        id=patient.id,
+        full_name=patient.full_name,
+        dob=patient.dob,
+        gender=patient.gender,
+        address=patient.address,
+        phone=patient.phone,
+        email=user.email,
+        role=user.role,
+        username=user.username
+    )
 
 @app.post("/appointments/", response_model=AppointmentCreate)
 def schedule_appointment(
-    appointment_data: AppointmentCreate,
+    appointment_data: AppointmentCreateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Ensure current_user is a patient
     if current_user.role != "patient":
         raise HTTPException(status_code=403, detail="Only patients can schedule appointments.")
 
-    # Ensure the doctor exists
+    patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
     doctor = db.query(Doctor).filter(Doctor.id == appointment_data.doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # Create the appointment
     new_appointment = Appointment(
-        patient_id=current_user.id,  # Use the logged-in patient's ID
+        patient_id=patient.id,
         doctor_id=appointment_data.doctor_id,
         scheduled_time=appointment_data.scheduled_time,
         status='scheduled',
@@ -321,61 +342,112 @@ def schedule_appointment(
     )
     db.add(new_appointment)
     db.commit()
-    return new_appointment
+    db.refresh(new_appointment)
 
+    return AppointmentCreate(
+        id=new_appointment.id,
+        patient_id=new_appointment.patient_id,
+        doctor_id=new_appointment.doctor_id,
+        scheduled_time=new_appointment.scheduled_time,
+        status=new_appointment.status,
+        notes=new_appointment.notes,
+        patient_name=patient.full_name,
+        doctor_name=doctor.full_name
+    )
 
 @app.put("/appointments/{appointment_id}/", response_model=AppointmentCreate)
 def update_appointment(appointment_id: int, appointment: AppointmentCreate, db: Session = Depends(get_db)):
     db_appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not db_appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
-    
+
     db_appointment.scheduled_time = appointment.scheduled_time
     db_appointment.notes = appointment.notes
     db.commit()
-    return db_appointment
+    db.refresh(db_appointment)
+    
+    return AppointmentCreate(
+        id=db_appointment.id,
+        patient_id=db_appointment.patient_id,
+        doctor_id=db_appointment.doctor_id,
+        scheduled_time=db_appointment.scheduled_time,
+        status=db_appointment.status,
+        notes=db_appointment.notes,
+        patient_name=db_appointment.patient.full_name if db_appointment.patient else None,
+        doctor_name=db_appointment.doctor.full_name if db_appointment.doctor else None
+    )
 
 @app.delete("/appointments/{appointment_id}/")
 def cancel_appointment(appointment_id: int, db: Session = Depends(get_db)):
     db_appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not db_appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
-    
+
     db_appointment.status = 'cancelled'
     db.commit()
     return {"message": "Appointment cancelled successfully"}
 
 @app.get("/appointments/", response_model=List[AppointmentCreate])
 def read_appointments(db: Session = Depends(get_db)):
-    return db.query(Appointment).all()
+    appointments = db.query(Appointment).options(
+        joinedload(Appointment.patient),
+        joinedload(Appointment.doctor)
+    ).all()
+
+    return [
+        AppointmentCreate(
+            id=appt.id,
+            patient_id=appt.patient_id,
+            doctor_id=appt.doctor_id,
+            scheduled_time=appt.scheduled_time,
+            status=appt.status,
+            notes=appt.notes,
+            patient_name=appt.patient.full_name if appt.patient else None,
+            doctor_name=appt.doctor.full_name if appt.doctor else None
+        )
+        for appt in appointments
+    ]
 
 @app.get("/appointments/patient/{patient_id}/", response_model=List[AppointmentCreate])
 def read_patient_appointments(patient_id: int, db: Session = Depends(get_db)):
-    return db.query(Appointment).filter(Appointment.patient_id == patient_id).all()
+    appointments = db.query(Appointment).filter(Appointment.patient_id == patient_id).options(
+        joinedload(Appointment.patient),
+        joinedload(Appointment.doctor)
+    ).all()
+    return [
+        AppointmentCreate(
+            id=appt.id,
+            patient_id=appt.patient_id,
+            doctor_id=appt.doctor_id,
+            scheduled_time=appt.scheduled_time,
+            status=appt.status,
+            notes=appt.notes,
+            patient_name=appt.patient.full_name if appt.patient else None,
+            doctor_name=appt.doctor.full_name if appt.doctor else None
+        )
+        for appt in appointments
+    ]
 
 @app.get("/appointments/doctor/{doctor_id}/", response_model=List[AppointmentCreate])
 def read_doctor_appointments(doctor_id: int, db: Session = Depends(get_db)):
-    return db.query(Appointment).filter(Appointment.doctor_id == doctor_id).all()
-
-@app.get("/myinfo/", response_model=UserProfileResponse)  # Use a unified response model that can include optional fields for different roles
-def get_my_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    user_profile = db.query(User).filter(User.id == current_user.id).first()
-    extra_info = {}
-    if current_user.role == 'patient':
-        patient_info = db.query(Patient).filter(Patient.user_id == current_user.id).first()
-        extra_info = {
-            "medical_history": patient_info.medical_history if patient_info else None,
-            "dental_history": patient_info.dental_history if patient_info else None
-        }
-    elif current_user.role == 'doctor':
-        doctor_info = db.query(Doctor).filter(Doctor.user_id == current_user.id).first()
-        extra_info = {
-            "specialization": doctor_info.specialization if doctor_info else None
-        }
-    else:
-        raise HTTPException(status_code=404, detail="User info not available")
-
-    return {**user_profile.dict(), **extra_info}  # Combine the basic user profile with role-specific details
+    appointments = db.query(Appointment).filter(Appointment.doctor_id == doctor_id).options(
+        joinedload(Appointment.patient),
+        joinedload(Appointment.doctor)
+    ).all()
+    return [
+        AppointmentCreate(
+            id=appt.id,
+            patient_id=appt.patient_id,
+            doctor_id=appt.doctor_id,
+            scheduled_time=appt.scheduled_time,
+            status=appt.status,
+            notes=appt.notes,
+            patient_name=appt.patient.full_name if appt.patient else None,
+            doctor_name=appt.doctor.full_name if appt.doctor else None
+        )
+        for appt in appointments
+    ]
+ # Combine the basic user profile with role-specific details
 
 @app.get("/doctors/", response_model=List[DoctorResponse])
 def list_doctors(db: Session = Depends(get_db)):
