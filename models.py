@@ -1,4 +1,5 @@
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Text, Enum, DateTime , Float
+# models.py
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Text, Enum, DateTime, Float
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 Base = declarative_base()
@@ -12,8 +13,18 @@ class User(Base):
     email = Column(String(255), unique=True)
     patients = relationship("Patient", back_populates="user")
     doctor = relationship("Doctor", back_populates="user", uselist=False)
-    # appointments might not be needed here unless non-doctors can have appointments
 
+class Doctor(Base):
+    __tablename__ = 'doctors'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), unique=True)
+    full_name = Column(String(255))
+    dob = Column(Date)
+    gender = Column(String(50))
+    address = Column(String(255))
+    phone = Column(String(50))
+    user = relationship("User", back_populates="doctor")
+    appointments = relationship("Appointment", back_populates="doctor")
 
 class Patient(Base):
     __tablename__ = 'patients'
@@ -27,7 +38,7 @@ class Patient(Base):
     phone = Column(String(50))
     insurance_details = Column(String(255))
     appointments = relationship("Appointment", back_populates="patient")
-    medical_record = relationship('MedicalHistory', back_populates='patient', uselist=False)  # Correct relationship
+    medical_record = relationship('MedicalHistory', back_populates='patient', uselist=False)
 
 class MedicalHistory(Base):
     __tablename__ = 'medical_history'
@@ -39,18 +50,7 @@ class MedicalHistory(Base):
     lab_results = Column(Text)
     imaging_results = Column(Text)
     consultation_notes = Column(Text)
-    patient = relationship('Patient', back_populates='medical_record')  # Correct relationship
-
-
-class Doctor(Base):
-    __tablename__ = 'doctors'
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), unique=True)
-    specialization = Column(String(255))
-    consultation_hours = Column(String(255))
-    user = relationship("User", back_populates="doctor")
-    appointments = relationship("Appointment", back_populates="doctor")  # Add this line
-
+    patient = relationship('Patient', back_populates='medical_record')
 
 class Appointment(Base):
     __tablename__ = 'appointments'
@@ -59,12 +59,9 @@ class Appointment(Base):
     doctor_id = Column(Integer, ForeignKey('doctors.id'))
     scheduled_time = Column(DateTime)
     status = Column(Enum('scheduled', 'completed', 'cancelled', name='status_types'))
-    notes = Column(String, nullable=True)
+    notes = Column(String(255), nullable=True)  # Specify length for notes
     patient = relationship("Patient", back_populates="appointments")
-    doctor = relationship("Doctor", back_populates="appointments")  # Link to Doctor, not User
-
-
-
+    doctor = relationship("Doctor", back_populates="appointments")
 
 class Bill(Base):
     __tablename__ = 'bills'
@@ -82,4 +79,3 @@ class Payment(Base):
     amount = Column(Float)
     payment_method = Column(String(255))
     bill = relationship('Bill', back_populates='payments')
-

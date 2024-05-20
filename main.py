@@ -50,27 +50,33 @@ class PasswordResetResponse(BaseModel):
     message: str
     reset_token: str 
 
-class PatientResponse(BaseModel):
-    id: int
-    full_name: str
-    dob: datetime
-    gender: str
-    address: str
-    phone: str
-    insurance_details: Optional[str] = None
-    medical_history: Optional[str] = None
 
 
 class AppointmentCreate(BaseModel):
     patient_id: int
+    patient_name: str
     doctor_id: int
+    doctor_name: str
     scheduled_time: datetime
     notes: Optional[str] = None
-class DoctorResponse(BaseModel):
+
+class UserProfileResponse(BaseModel):
     id: int
     username: str
-    email: str
-    role: str  # This assumes role is a field in your User model
+    email: EmailStr
+    role: str
+    full_name: Optional[str] = None
+    dob: Optional[datetime] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    insurance_details: Optional[str] = None
+    medical_history: Optional[str] = None
+    dental_history: Optional[str] = None
+    language_preference: Optional[str] = None
+
+    class Config:
+        arbitrary_types_allowed = True
 
 class UserProfile(BaseModel):
     username: str
@@ -120,12 +126,7 @@ class BillResponseModel(BaseModel):
     status: str
 
 
-class PaymentResponseModel(BaseModel):
-    id: int
-    patient_id: int
-    amount: float
-    payment_method: str
-    status: str
+
 
 
 
@@ -134,7 +135,7 @@ class PaymentResponse(BaseModel):
     bill_id: int
     amount: float
     payment_method: str
-
+    status: str
 
 class PatientResponse(BaseModel):
     id: int
@@ -150,13 +151,19 @@ class PatientResponse(BaseModel):
     language_preference: Optional[str] = None
 
 
-
 class DoctorResponse(BaseModel):
+    id: int
     username: str
     email: str
     role: str
-    specialization: str
-    consultation_hours: str
+    full_name: Optional[str] = None
+    dob: Optional[datetime] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+
+    class Config:
+        arbitrary_types_allowed = True
 
 
 
@@ -198,7 +205,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import bcrypt
 from models import User, Patient, Doctor  # Ensure these are imported or defined in your context
-
+from sqlalchemy.orm import joinedload
 from fastapi import HTTPException, Form, Depends
 from pydantic import EmailStr
 from sqlalchemy.orm import Session
@@ -217,8 +224,6 @@ def register_user(
     gender: str = Form(...),
     address: str = Form(...),
     phone: str = Form(...),
-    specialization: str = Form(None),  # Optional field for doctors
-    consultation_hours: str = Form(None),  # Optional field for doctors
     db: Session = Depends(get_db)
 ):
     email = email.lower()
@@ -260,18 +265,19 @@ def register_user(
             )
             db.add(new_patient)
         elif role == "doctor":
-            if not specialization or not consultation_hours:
-                raise HTTPException(status_code=422, detail="Specialization and consultation hours are required for doctors")
             new_doctor = Doctor(
                 user_id=new_user.id,
-                specialization=specialization,
-                consultation_hours=consultation_hours
+                full_name=full_name,
+                dob=dob,
+                gender=gender,
+                address=address,
+                phone=phone
             )
             db.add(new_doctor)
 
         db.commit()  # Commit the transaction
 
-    except IntegrityError:
+    except Exception as e:
         db.rollback()  # Roll back the transaction on error
         raise HTTPException(status_code=500, detail="Failed to register user")
 
@@ -285,9 +291,6 @@ def register_user(
         "email": email,
         "role": role
     }
-
-
-
 
 @app.post("/login/", response_model=LoginResponse)
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -357,16 +360,16 @@ def reset_password(token: str, new_password: str, db: Session = Depends(get_db))
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
+        user_id: int = payload.get("user_id")
+        if user_id is None:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
-        user = db.query(User).filter(User.username == username).first()
+        user = db.query(User).filter(User.id == user_id).first()
         if user is None:
             raise HTTPException(status_code=403, detail="User not found")
         return user
     except JWTError:
         raise HTTPException(status_code=403, detail="Invalid authentication token")
-
+    
 @app.get("/patients/{user_id}/", response_model=PatientResponse)
 async def get_patient_data(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     patient = db.query(Patient).filter(Patient.user_id == user_id).first()
@@ -381,52 +384,43 @@ async def get_patient_data(user_id: int, db: Session = Depends(get_db), current_
 from fastapi import HTTPException, Depends
 from sqlalchemy.orm import Session
 import logging
-
 @app.post("/appointments/", response_model=AppointmentCreate)
 def schedule_appointment(
     appointment_data: AppointmentCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Logging current user role and ID
-    logging.info(f"Current User ID: {current_user.id}, Role: {current_user.role}")
-
-    # Ensure current_user is a patient
     if current_user.role != "patient":
         raise HTTPException(status_code=403, detail="Only patients can schedule appointments.")
 
-    # Logging doctor ID being searched
-    logging.info(f"Searching for Doctor ID: {appointment_data.doctor_id}")
-
-    # Ensure the doctor exists
     doctor = db.query(Doctor).filter(Doctor.id == appointment_data.doctor_id).first()
     if not doctor:
-        logging.error("Doctor not found")
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    # Create the appointment
+    patient = db.query(Patient).filter(Patient.id == appointment_data.patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
     new_appointment = Appointment(
-        patient_id=current_user.id,  # Use the logged-in patient's ID
+        patient_id=appointment_data.patient_id,
         doctor_id=appointment_data.doctor_id,
         scheduled_time=appointment_data.scheduled_time,
         status='scheduled',
-        notes=appointment_data.notes
+        notes=appointment_data.notes,
+        patient_name=patient.full_name,
+        doctor_name=doctor.full_name
     )
     db.add(new_appointment)
     db.commit()
     
-    logging.info("Appointment scheduled successfully")
     return new_appointment
-
-
-
 
 @app.put("/appointments/{appointment_id}/", response_model=AppointmentCreate)
 def update_appointment(appointment_id: int, appointment: AppointmentCreate, db: Session = Depends(get_db)):
     db_appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not db_appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
-    
+
     db_appointment.scheduled_time = appointment.scheduled_time
     db_appointment.notes = appointment.notes
     db.commit()
@@ -452,53 +446,34 @@ def read_patient_appointments(patient_id: int, db: Session = Depends(get_db)):
 
 @app.get("/appointments/doctor/{doctor_id}/", response_model=List[AppointmentCreate])
 def read_doctor_appointments(doctor_id: int, db: Session = Depends(get_db)):
-    return db.query(Appointment).filter(Appointment.doctor_id == doctor_id).all()
+    return db.query(Appointment).filter(Appointment.doctor_id == doctor_id).all() # Combine the basic user profile with role-specific details
 
-@app.get("/myinfo/", response_model=UserProfile)  # Use a unified response model that can include optional fields for different roles
-def get_my_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    user_profile = db.query(User).filter(User.id == current_user.id).first()
-    extra_info = {}
-    if current_user.role == 'patient':
-        patient_info = db.query(Patient).filter(Patient.user_id == current_user.id).first()
-        extra_info = {
-            "medical_history": patient_info.medical_history if patient_info else None,
-            "dental_history": patient_info.dental_history if patient_info else None
-        }
-    elif current_user.role == 'doctor':
-        doctor_info = db.query(Doctor).filter(Doctor.user_id == current_user.id).first()
-        extra_info = {
-            "specialization": doctor_info.specialization if doctor_info else None
-        }
-    else:
-        raise HTTPException(status_code=404, detail="User info not available")
 
-    return {**user_profile.dict(), **extra_info}  # Combine the basic user profile with role-specific details
-
-from sqlalchemy.orm import joinedload
 
 @app.get("/doctors/", response_model=List[DoctorResponse])
 def list_doctors(db: Session = Depends(get_db)):
     try:
-        # Ensure you are loading the necessary user data as well
         doctors = db.query(Doctor).options(joinedload(Doctor.user)).all()
         if not doctors:
             raise HTTPException(status_code=404, detail="No doctors found")
 
-        # Map the data to your response model properly
         result = []
         for doctor in doctors:
             doctor_data = {
+                "id": doctor.id,
                 "username": doctor.user.username,
                 "email": doctor.user.email,
                 "role": doctor.user.role,
-                "specialization": doctor.specialization,
-                "consultation_hours": doctor.consultation_hours
+                "full_name": doctor.full_name,
+                "dob": doctor.dob,
+                "gender": doctor.gender,
+                "address": doctor.address,
+                "phone": doctor.phone
             }
             result.append(doctor_data)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 @app.put("/users/me/", response_model=UserProfile)
 async def update_user_profile(update_data: UserProfileUpdateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     user_data = update_data.dict(exclude_unset=True)
@@ -562,26 +537,48 @@ def process_payment(payment_data: ProcessPayment, db: Session = Depends(get_db))
         # Handle the case where the charge fails
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/user_info", response_model=PatientResponse)
-async def get_user_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-    
-    return PatientResponse(
-        id=patient.id,
-        full_name=patient.full_name,
-        dob=patient.dob,
-        gender=patient.gender,
-        address=patient.address,
-        phone=patient.phone,
-        email=current_user.email,
-        insurance_details=patient.insurance_details,
-        medical_history=patient.medical_history,
-        dental_history=patient.dental_history,
-        language_preference=patient.language_preference
-    )
 
+
+
+
+@app.get("/user_info", response_model=UserProfileResponse)
+async def get_user_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user_data = {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "role": current_user.role
+    }
+    
+    if current_user.role == "patient":
+        patient = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+        if not patient:
+            raise HTTPException(status_code=404, detail="Patient not found")
+        user_data.update({
+            "full_name": patient.full_name,
+            "dob": patient.dob,
+            "gender": patient.gender,
+            "address": patient.address,
+            "phone": patient.phone,
+            "insurance_details": patient.insurance_details,
+            "medical_history": patient.medical_history,
+            "dental_history": patient.dental_history,
+            "language_preference": patient.language_preference
+        })
+    
+    elif current_user.role == "doctor":
+        doctor = db.query(Doctor).filter(Doctor.user_id == current_user.id).first()
+        if not doctor:
+            raise HTTPException(status_code=404, detail="Doctor not found")
+        user_data.update({
+            "full_name": doctor.full_name,
+            "dob": doctor.dob,
+            "gender": doctor.gender,
+            "address": doctor.address,
+            "phone": doctor.phone
+        })
+    
+    return user_data
 
 
 @app.delete("/users/{user_id}")
