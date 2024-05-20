@@ -1,8 +1,7 @@
-import io
-from fastapi import FastAPI, Depends, File, HTTPException, UploadFile, status , Form
-from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey , Boolean, func
+from fastapi import FastAPI, Depends, HTTPException, status , Form
+from sqlalchemy import Column, Integer, String, Date, Text, ForeignKey , Boolean
 from sqlalchemy.orm import Session
-from models import User , Patient , Appointment , Doctor , Bill , Payment , MedicalHistory
+from models import User , Patient , Appointment , Doctor , Bill , Payment
 from database import get_db
 import bcrypt
 from pydantic import BaseModel , EmailStr
@@ -15,8 +14,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import stripe
-import PyPDF2
-from sqlalchemy.orm import Session
 
 # Set your secret key. Remember to switch to your live secret key in production.
 # See your keys here: https://dashboard.stripe.com/apikeys
@@ -50,37 +47,32 @@ class PasswordResetResponse(BaseModel):
     message: str
     reset_token: str 
 
-
-
-class AppointmentCreate(BaseModel):
-    patient_id: int
-    patient_name: str
-    doctor_id: int
-    doctor_name: str
-    scheduled_time: datetime
-    notes: Optional[str] = None
-
-class UserProfileResponse(BaseModel):
+class PatientResponse(BaseModel):
     id: int
-    username: str
-    email: EmailStr
-    role: str
-    full_name: Optional[str] = None
-    dob: Optional[datetime] = None
-    gender: Optional[str] = None
-    address: Optional[str] = None
-    phone: Optional[str] = None
+    full_name: str
+    dob: datetime
+    gender: str
+    address: str
+    phone: str
     insurance_details: Optional[str] = None
     medical_history: Optional[str] = None
     dental_history: Optional[str] = None
     language_preference: Optional[str] = None
 
-    class Config:
-        arbitrary_types_allowed = True
-
-class UserProfile(BaseModel):
+class AppointmentCreate(BaseModel):
+    patient_id: int
+    doctor_id: int
+    scheduled_time: datetime
+    notes: Optional[str] = None
+class DoctorResponse(BaseModel):
+    id: int
     username: str
     email: str
+    role: str  # This assumes role is a field in your User model
+
+class UserProfileResponse(BaseModel):
+    username: str
+    email: EmailStr
     full_name: Optional[str] = None
     dob: Optional[datetime] = None
     gender: Optional[str] = None
@@ -90,15 +82,6 @@ class UserProfile(BaseModel):
 class UserProfileUpdateRequest(BaseModel):
     full_name: Optional[str] = None
     dob: Optional[str] = None  # We will accept string and parse it to date
-    gender: Optional[str] = None
-    address: Optional[str] = None
-    phone: Optional[str] = None
-
-class UserUpdateModel(BaseModel):
-    username: Optional[str] = None
-    email: Optional[str] = None
-    full_name: Optional[str] = None
-    dob: Optional[datetime] = None
     gender: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
@@ -126,7 +109,12 @@ class BillResponseModel(BaseModel):
     status: str
 
 
-
+class PaymentResponseModel(BaseModel):
+    id: int
+    patient_id: int
+    amount: float
+    payment_method: str
+    status: str
 
 
 
@@ -135,7 +123,7 @@ class PaymentResponse(BaseModel):
     bill_id: int
     amount: float
     payment_method: str
-    status: str
+
 
 class PatientResponse(BaseModel):
     id: int
@@ -149,23 +137,6 @@ class PatientResponse(BaseModel):
     medical_history: Optional[str] = None
     dental_history: Optional[str] = None
     language_preference: Optional[str] = None
-
-
-class DoctorResponse(BaseModel):
-    id: int
-    username: str
-    email: str
-    role: str
-    full_name: Optional[str] = None
-    dob: Optional[datetime] = None
-    gender: Optional[str] = None
-    address: Optional[str] = None
-    phone: Optional[str] = None
-
-    class Config:
-        arbitrary_types_allowed = True
-
-
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
@@ -189,30 +160,12 @@ def send_email(subject, receiver_email, body, smtp_server="smtp.office365.com", 
     except Exception as e:
         print(f"Failed to send email: {e}")
 
-def create_access_token(data: dict, expires_delta: timedelta = None):
+def create_access_token(data: dict, expires_delta: timedelta):
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+    expire = datetime.utcnow() + expires_delta
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
-
-from fastapi import HTTPException, Form, Depends
-from pydantic import EmailStr
-from sqlalchemy.orm import Session
-from datetime import datetime
-import bcrypt
-from models import User, Patient, Doctor  # Ensure these are imported or defined in your context
-from sqlalchemy.orm import joinedload
-from fastapi import HTTPException, Form, Depends
-from pydantic import EmailStr
-from sqlalchemy.orm import Session
-from datetime import datetime
-import bcrypt
-from models import User, Patient, Doctor  # Ensure these are imported or defined in your context
-from sqlalchemy.exc import IntegrityError
 
 @app.post("/register/", response_model=RegistrationResponse)
 def register_user(
@@ -231,82 +184,48 @@ def register_user(
     if email.endswith("-d"):
         email = email[:-2]
 
-    # Check if the email or username already exists in the database
-    existing_user = db.query(User).filter((User.email == email) | (User.username == username)).first()
-    if existing_user:
-        if existing_user.email == email:
-            raise HTTPException(status_code=400, detail="Email already in use")
-        elif existing_user.username == username:
-            raise HTTPException(status_code=400, detail="Username already in use")
-
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(status_code=400, detail="Email already in use")
+    
     try:
         dob = datetime.strptime(dob_str, "%Y-%m-%d")  # Parse the date string
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid date format")
 
     hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-
-    # Create a new user instance
     new_user = User(username=username, email=email, password_hash=hashed_password, role=role)
+    db.add(new_user)
+    db.commit()
+    if role == "patient":
+        new_patient = Patient(
+            user_id=new_user.id,
+            full_name=full_name,
+            dob=dob,
+            gender=gender,
+            address=address,
+            phone=phone
+        )
+        db.add(new_patient)
+        db.commit()
 
-    try:
-        # Start the transaction
-        db.add(new_user)
-        db.flush()  # Flush here to catch any integrity errors early
-
-        if role == "patient":
-            new_patient = Patient(
-                user_id=new_user.id,
-                full_name=full_name,
-                dob=dob,
-                gender=gender,
-                address=address,
-                phone=phone
-            )
-            db.add(new_patient)
-        elif role == "doctor":
-            new_doctor = Doctor(
-                user_id=new_user.id,
-                full_name=full_name,
-                dob=dob,
-                gender=gender,
-                address=address,
-                phone=phone
-            )
-            db.add(new_doctor)
-
-        db.commit()  # Commit the transaction
-
-    except Exception as e:
-        db.rollback()  # Roll back the transaction on error
-        raise HTTPException(status_code=500, detail="Failed to register user")
-
-    # Assuming send_email is defined elsewhere
     body = f"Hello {full_name},\n\nWelcome to our service! We are excited to have you on board."
     send_email("Welcome to Our Service", email, body)
 
-    return {
-        "message": "Registration successful, and a welcome email has been sent.",
-        "username": username,
-        "email": email,
-        "role": role
-    }
+    return RegistrationResponse(
+        message="Registration successful, and a welcome email has been sent.",
+        username=username,
+        email=email,
+        role=role
+    )
 
 @app.post("/login/", response_model=LoginResponse)
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
-    if user:
-        logging.info(f"User found: {user.username}")
-        if bcrypt.checkpw(form_data.password.encode(), user.password_hash.encode()):
-            logging.info("Password matched")
-            access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-            return LoginResponse(access_token=access_token, token_type="bearer", user_id=user.id, role=user.role)
-        else:
-            logging.error("Password did not match")
+    if user and bcrypt.checkpw(form_data.password.encode(), user.password_hash.encode()):
+        access_token = create_access_token(data={"sub": user.username, "user_id": user.id, "role": user.role}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+        return LoginResponse(access_token=access_token, token_type="bearer", user_id=user.id, role=user.role)
     else:
-        logging.error("User not found")
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
 
 @app.post("/forgot-password/", response_model=PasswordResetResponse)
@@ -336,13 +255,9 @@ def send_password_reset_email(email: str, username: str, token: str):
 
 @app.post("/reset-password/", response_model=PasswordResetResponse)
 def reset_password(token: str, new_password: str, db: Session = Depends(get_db)):
-    print("Token:", token)
-    print("New Password:", new_password)
-
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-
         if not username:
             raise HTTPException(status_code=403, detail="Invalid token")
         
@@ -351,7 +266,7 @@ def reset_password(token: str, new_password: str, db: Session = Depends(get_db))
             hashed_password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
             user.password_hash = hashed_password
             db.commit()
-            return PasswordResetResponse(message="Password reset successful", reset_token=token)  # Include reset_token in the response
+            return PasswordResetResponse(message="Password reset successful")
         else:
             raise HTTPException(status_code=404, detail="User not found")
     except JWTError as e:
@@ -360,16 +275,16 @@ def reset_password(token: str, new_password: str, db: Session = Depends(get_db))
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: int = payload.get("user_id")
-        if user_id is None:
+        username: str = payload.get("sub")
+        if username is None:
             raise HTTPException(status_code=403, detail="Invalid authentication credentials")
-        user = db.query(User).filter(User.id == user_id).first()
+        user = db.query(User).filter(User.username == username).first()
         if user is None:
             raise HTTPException(status_code=403, detail="User not found")
         return user
     except JWTError:
         raise HTTPException(status_code=403, detail="Invalid authentication token")
-    
+
 @app.get("/patients/{user_id}/", response_model=PatientResponse)
 async def get_patient_data(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     patient = db.query(Patient).filter(Patient.user_id == user_id).first()
@@ -381,46 +296,40 @@ async def get_patient_data(user_id: int, db: Session = Depends(get_db), current_
 
     return patient
 
-from fastapi import HTTPException, Depends
-from sqlalchemy.orm import Session
-import logging
 @app.post("/appointments/", response_model=AppointmentCreate)
 def schedule_appointment(
     appointment_data: AppointmentCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    # Ensure current_user is a patient
     if current_user.role != "patient":
         raise HTTPException(status_code=403, detail="Only patients can schedule appointments.")
 
+    # Ensure the doctor exists
     doctor = db.query(Doctor).filter(Doctor.id == appointment_data.doctor_id).first()
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
 
-    patient = db.query(Patient).filter(Patient.id == appointment_data.patient_id).first()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-
+    # Create the appointment
     new_appointment = Appointment(
-        patient_id=appointment_data.patient_id,
+        patient_id=current_user.id,  # Use the logged-in patient's ID
         doctor_id=appointment_data.doctor_id,
         scheduled_time=appointment_data.scheduled_time,
         status='scheduled',
-        notes=appointment_data.notes,
-        patient_name=patient.full_name,
-        doctor_name=doctor.full_name
+        notes=appointment_data.notes
     )
     db.add(new_appointment)
     db.commit()
-    
     return new_appointment
+
 
 @app.put("/appointments/{appointment_id}/", response_model=AppointmentCreate)
 def update_appointment(appointment_id: int, appointment: AppointmentCreate, db: Session = Depends(get_db)):
     db_appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not db_appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
-
+    
     db_appointment.scheduled_time = appointment.scheduled_time
     db_appointment.notes = appointment.notes
     db.commit()
@@ -446,35 +355,38 @@ def read_patient_appointments(patient_id: int, db: Session = Depends(get_db)):
 
 @app.get("/appointments/doctor/{doctor_id}/", response_model=List[AppointmentCreate])
 def read_doctor_appointments(doctor_id: int, db: Session = Depends(get_db)):
-    return db.query(Appointment).filter(Appointment.doctor_id == doctor_id).all() # Combine the basic user profile with role-specific details
+    return db.query(Appointment).filter(Appointment.doctor_id == doctor_id).all()
 
+@app.get("/myinfo/", response_model=UserProfileResponse)  # Use a unified response model that can include optional fields for different roles
+def get_my_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user_profile = db.query(User).filter(User.id == current_user.id).first()
+    extra_info = {}
+    if current_user.role == 'patient':
+        patient_info = db.query(Patient).filter(Patient.user_id == current_user.id).first()
+        extra_info = {
+            "medical_history": patient_info.medical_history if patient_info else None,
+            "dental_history": patient_info.dental_history if patient_info else None
+        }
+    elif current_user.role == 'doctor':
+        doctor_info = db.query(Doctor).filter(Doctor.user_id == current_user.id).first()
+        extra_info = {
+            "specialization": doctor_info.specialization if doctor_info else None
+        }
+    else:
+        raise HTTPException(status_code=404, detail="User info not available")
 
+    return {**user_profile.dict(), **extra_info}  # Combine the basic user profile with role-specific details
 
 @app.get("/doctors/", response_model=List[DoctorResponse])
 def list_doctors(db: Session = Depends(get_db)):
     try:
-        doctors = db.query(Doctor).options(joinedload(Doctor.user)).all()
+        doctors = db.query(User).filter(User.role == 'doctor').all()
         if not doctors:
             raise HTTPException(status_code=404, detail="No doctors found")
-
-        result = []
-        for doctor in doctors:
-            doctor_data = {
-                "id": doctor.id,
-                "username": doctor.user.username,
-                "email": doctor.user.email,
-                "role": doctor.user.role,
-                "full_name": doctor.full_name,
-                "dob": doctor.dob,
-                "gender": doctor.gender,
-                "address": doctor.address,
-                "phone": doctor.phone
-            }
-            result.append(doctor_data)
-        return result
+        return doctors
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-@app.put("/users/me/", response_model=UserProfile)
+        raise HTTPException(status_code=500, detail=str(e)) 
+@app.put("/users/me/", response_model=UserProfileResponse)
 async def update_user_profile(update_data: UserProfileUpdateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     user_data = update_data.dict(exclude_unset=True)
     for key, value in user_data.items():
@@ -537,14 +449,9 @@ def process_payment(payment_data: ProcessPayment, db: Session = Depends(get_db))
         # Handle the case where the charge fails
         raise HTTPException(status_code=400, detail=str(e))
 
-
-
-
-
 @app.get("/user_info", response_model=UserProfileResponse)
 async def get_user_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     user_data = {
-        "id": current_user.id,
         "username": current_user.username,
         "email": current_user.email,
         "role": current_user.role
@@ -559,11 +466,7 @@ async def get_user_info(current_user: User = Depends(get_current_user), db: Sess
             "dob": patient.dob,
             "gender": patient.gender,
             "address": patient.address,
-            "phone": patient.phone,
-            "insurance_details": patient.insurance_details,
-            "medical_history": patient.medical_history,
-            "dental_history": patient.dental_history,
-            "language_preference": patient.language_preference
+            "phone": patient.phone
         })
     
     elif current_user.role == "doctor":
@@ -579,142 +482,3 @@ async def get_user_info(current_user: User = Depends(get_current_user), db: Sess
         })
     
     return user_data
-
-
-@app.delete("/users/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    
-    
-    user_to_delete = db.query(User).filter(User.id == user_id).first()
-    if not user_to_delete:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    db.delete(user_to_delete)
-    db.commit()
-    return {"message": "User successfully deleted"}
-
-
-@app.get("/users")
-def view_all_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    
-    users = db.query(User).all()
-    return users
-
-@app.get("/patients")
-def view_all_patients(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    
-    patients = db.query(Patient).all()
-    return patients
-
-@app.get("/staff")
-def view_all_staff(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Access denied: Admin privileges required.")
-    
-    staff = db.query(staff).all()
-    return staff
-
-@app.put("/users/{user_id}")
-def update_user(user_id: int, user_update: UserUpdateModel, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Access denied: Admin privileges required.")
-
-    user_to_update = db.query(User).filter(User.id == user_id).first()
-    if not user_to_update:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    user_data = user_update.dict(exclude_unset=True)
-    for key, value in user_data.items():
-        if hasattr(user_to_update, key):
-            setattr(user_to_update, key, value)
-
-    db.commit()
-    return {"message": "User data successfully updated", "user": user_to_update.username}  # Returning username for confirmation
-
-@app.get("/clinical-performance/")
-def clinical_performance(db: Session = Depends(get_db)):
-    completed_appointments = db.query(Appointment).filter(Appointment.status == 'completed').count()
-    canceled_appointments = db.query(Appointment).filter(Appointment.status == 'cancelled').count()
-    
-    # Calculate most/least used services based on appointment data
-    # Replace 'service_field' with the actual field in your Appointment model representing services
-    most_used_service = db.query(Appointment.service_field).group_by(Appointment.service_field).order_by(func.count().desc()).first()
-    least_used_service = db.query(Appointment.service_field).group_by(Appointment.service_field).order_by(func.count()).first()
-    
-    return {
-        "completed_appointments": completed_appointments,
-        "canceled_appointments": canceled_appointments,
-        "most_used_service": most_used_service,
-        "least_used_service": least_used_service
-    }
-
-@app.get("/patient-statistics/")
-def patient_statistics(db: Session = Depends(get_db)):
-    gender_distribution = db.query(Patient.gender, func.count()).group_by(Patient.gender).all()
-    # Calculate age distribution based on date of birth
-    # Replace 'dob' with the actual field representing date of birth in your Patient model
-    age_distribution = db.query(func.floor(func.datediff(datetime.now(), Patient.dob) / 365), func.count()).group_by(func.floor(func.datediff(datetime.now(), Patient.dob) / 365)).all()
-    total_patients = db.query(Patient).count()
-    
-    return {
-        "gender_distribution": gender_distribution,
-        "age_distribution": age_distribution,
-        "total_patients": total_patients
-    }
-
-@app.get("/financial-insights/")
-def financial_insights(db: Session = Depends(get_db)):
-    total_amount_due = db.query(func.sum(Bill.amount_due)).scalar()
-    total_amount_paid = db.query(func.sum(Payment.amount)).scalar()
-    total_doctors = db.query(Doctor).count()
-    total_patients = db.query(Patient).count()
-    
-    return {
-        "total_amount_due": total_amount_due,
-        "total_amount_paid": total_amount_paid,
-        "total_doctors": total_doctors,
-        "total_patients": total_patients
-    }
-
-
-
-
-@app.post("/medical-history/{patient_id}/")
-async def upload_medical_history(patient_id: int, pdf_file: UploadFile = File(...), db: Session = Depends(get_db)):
-    # Check if the current user has permission to upload medical records
-    # You might want to implement authorization logic here
-
-    # Read the PDF file
-    pdf_content = await pdf_file.read()
-
-    # Extract text from the PDF
-    pdf_text = extract_text_from_pdf(pdf_content)
-
-    # Parse the extracted text to extract medical history information
-    medical_history_data = parse_medical_history_text(pdf_text)
-
-    # Store the medical history information in the database
-    medical_history = MedicalHistory(patient_id=patient_id, **medical_history_data)
-    db.add(medical_history)
-    db.commit()
-
-    return {"detail": "Medical history uploaded successfully"}
-
-def extract_text_from_pdf(pdf_content: bytes) -> str:
-    pdf_reader = PyPDF2.PdfFileReader(io.BytesIO(pdf_content))
-    text = ""
-    for page_num in range(pdf_reader.numPages):
-        text += pdf_reader.getPage(page_num).extractText()
-    return text
-
-def parse_medical_history_text(text: str) -> dict:
-    # Implement your logic to parse the text and extract medical history information
-    # This can be done using regex or other text processing techniques
-    # In this example, we assume a simple parsing where each line contains a field and its corresponding value
-    medical_history_data = {}
-    lines = text.split("\n")
-    for line in lines:
-        if ":" in line:
-            field, value = line.split(":", 1)
-            medical_history_data[field.strip().lower().replace(" ", "_")] = value.strip()
-    return medical_history_data

@@ -1,4 +1,3 @@
-# models.py
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Text, Enum, DateTime, Float
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
@@ -38,7 +37,7 @@ class Patient(Base):
     phone = Column(String(50))
     insurance_details = Column(String(255))
     appointments = relationship("Appointment", back_populates="patient")
-    medical_record = relationship('MedicalHistory', back_populates='patient', uselist=False)
+    medical_history = relationship('MedicalHistory', back_populates='patient', uselist=False)
 
 class MedicalHistory(Base):
     __tablename__ = 'medical_history'
@@ -50,7 +49,7 @@ class MedicalHistory(Base):
     lab_results = Column(Text)
     imaging_results = Column(Text)
     consultation_notes = Column(Text)
-    patient = relationship('Patient', back_populates='medical_record')
+    patient = relationship('Patient', back_populates='medical_history')
 
 class Appointment(Base):
     __tablename__ = 'appointments'
@@ -59,7 +58,7 @@ class Appointment(Base):
     doctor_id = Column(Integer, ForeignKey('doctors.id'))
     scheduled_time = Column(DateTime)
     status = Column(Enum('scheduled', 'completed', 'cancelled', name='status_types'))
-    notes = Column(String(255), nullable=True)  # Specify length for notes
+    notes = Column(String(255), nullable=True)
     patient = relationship("Patient", back_populates="appointments")
     doctor = relationship("Doctor", back_populates="appointments")
 
