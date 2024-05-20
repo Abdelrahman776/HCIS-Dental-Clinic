@@ -25,9 +25,21 @@ class Patient(Base):
     address = Column(String(255))
     phone = Column(String(50))
     insurance_details = Column(String(255))
-    medical_history = Column(Text)
+    appointments = relationship("Appointment", back_populates="patient")
+    medical_record = relationship('MedicalHistory', back_populates='patient', uselist=False)  # Correct relationship
 
-    appointments = relationship("Appointment", back_populates="patient", foreign_keys="[Appointment.patient_id]")
+class MedicalHistory(Base):
+    __tablename__ = 'medical_history'
+    id = Column(Integer, primary_key=True)
+    patient_id = Column(Integer, ForeignKey('patients.id'))
+    allergies = Column(Text)
+    medications = Column(Text)
+    diagnosis = Column(Text)
+    lab_results = Column(Text)
+    imaging_results = Column(Text)
+    consultation_notes = Column(Text)
+    patient = relationship('Patient', back_populates='medical_record')  # Correct relationship
+
 
 class Doctor(Base):
     __tablename__ = 'doctors'
@@ -68,17 +80,8 @@ class Payment(Base):
     payment_method = Column(String(255))
     bill = relationship('Bill', back_populates='payments')
 
-class MedicalHistory(Base):
-    __tablename__ = 'medical_history'
-    id = Column(Integer, primary_key=True)
-    patient_id = Column(Integer, ForeignKey('patients.id'))
-    allergies = Column(Text)
-    medications = Column(Text)
-    diagnosis = Column(Text)
-    lab_results = Column(Text)
-    imaging_results = Column(Text)
-    consultation_notes = Column(Text)
-    patient = relationship('Patient', back_populates='medical_record')
+
+
 
 #table servics  contains clinic services and their prices
 
