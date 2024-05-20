@@ -26,6 +26,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 90
 
 class RegistrationResponse(BaseModel):
+    id: int
     message: str
     username: str
     email: str
@@ -203,6 +204,8 @@ def register_user(
     new_user = User(username=username, email=email, password_hash=hashed_password, role=role)
     db.add(new_user)
     db.commit()
+    db.refresh(new_user)
+
     if role == "patient":
         new_patient = Patient(
             user_id=new_user.id,
@@ -213,12 +216,24 @@ def register_user(
             phone=phone
         )
         db.add(new_patient)
-        db.commit()
+    elif role == "doctor":
+        new_doctor = Doctor(
+            user_id=new_user.id,
+            full_name=full_name,
+            dob=dob,
+            gender=gender,
+            address=address,
+            phone=phone
+        )
+        db.add(new_doctor)
+    
+    db.commit()
 
     body = f"Hello {full_name},\n\nWelcome to our service! We are excited to have you on board."
     send_email("Welcome to Our Service", email, body)
 
     return RegistrationResponse(
+        id=new_user.id,
         message="Registration successful, and a welcome email has been sent.",
         username=username,
         email=email,
@@ -356,7 +371,7 @@ def schedule_appointment(
     )
 
 @app.put("/appointments/{appointment_id}/", response_model=AppointmentCreate)
-def update_appointment(appointment_id: int, appointment: AppointmentCreate, db: Session = Depends(get_db)):
+def update_appointment(appointment_id: int, appointment: AppointmentCreateRequest, db: Session = Depends(get_db)):
     db_appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not db_appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
@@ -365,7 +380,10 @@ def update_appointment(appointment_id: int, appointment: AppointmentCreate, db: 
     db_appointment.notes = appointment.notes
     db.commit()
     db.refresh(db_appointment)
-    
+
+    patient = db_appointment.patient
+    doctor = db_appointment.doctor
+
     return AppointmentCreate(
         id=db_appointment.id,
         patient_id=db_appointment.patient_id,
@@ -373,8 +391,8 @@ def update_appointment(appointment_id: int, appointment: AppointmentCreate, db: 
         scheduled_time=db_appointment.scheduled_time,
         status=db_appointment.status,
         notes=db_appointment.notes,
-        patient_name=db_appointment.patient.full_name if db_appointment.patient else None,
-        doctor_name=db_appointment.doctor.full_name if db_appointment.doctor else None
+        patient_name=patient.full_name,
+        doctor_name=doctor.full_name
     )
 
 @app.delete("/appointments/{appointment_id}/")
@@ -414,6 +432,7 @@ def read_patient_appointments(patient_id: int, db: Session = Depends(get_db)):
         joinedload(Appointment.patient),
         joinedload(Appointment.doctor)
     ).all()
+
     return [
         AppointmentCreate(
             id=appt.id,
@@ -428,6 +447,26 @@ def read_patient_appointments(patient_id: int, db: Session = Depends(get_db)):
         for appt in appointments
     ]
 
+@app.get("/appointments/doctor/{doctor_id}/", response_model=List[AppointmentCreate])
+def read_doctor_appointments(doctor_id: int, db: Session = Depends(get_db)):
+    appointments = db.query(Appointment).filter(Appointment.doctor_id == doctor_id).options(
+        joinedload(Appointment.patient),
+        joinedload(Appointment.doctor)
+    ).all()
+
+    return [
+        AppointmentCreate(
+            id=appt.id,
+            patient_id=appt.patient_id,
+            doctor_id=appt.doctor_id,
+            scheduled_time=appt.scheduled_time,
+            status=appt.status,
+            notes=appt.notes,
+            patient_name=appt.patient.full_name if appt.patient else None,
+            doctor_name=appt.doctor.full_name if appt.doctor else None
+        )
+        for appt in appointments
+    ]
 @app.get("/appointments/doctor/{doctor_id}/", response_model=List[AppointmentCreate])
 def read_doctor_appointments(doctor_id: int, db: Session = Depends(get_db)):
     appointments = db.query(Appointment).filter(Appointment.doctor_id == doctor_id).options(
