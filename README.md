@@ -1,2 +1,2 @@
 # Health Care Information System for a Dental Clinic :
-## implmented backend with fastapi
+## implemented backend with fastapi
